@@ -83,6 +83,13 @@ function genId() {
   return `m-${Date.now()}-${msgCounter}-${Math.random().toString(36).slice(2, 7)}`;
 }
 
+interface RetryPayload {
+  text: string;
+  attachmentsForSend: AiAttachment[];
+  userBlocks: RichBlock[];
+  displayContent: string;
+}
+
 interface LocalMessage {
   id: string;
   role: "user" | "assistant";
@@ -90,6 +97,8 @@ interface LocalMessage {
   blocks?: RichBlock[];
   serverId?: number;
   rating?: number | null;
+  isError?: boolean;
+  retryPayload?: RetryPayload;
 }
 
 interface PendingAttachment {
@@ -460,29 +469,20 @@ export default function AiChatScreen() {
     stopCurrentPlayback();
   }, [isRecording]);
 
-  const handleSend = useCallback(async () => {
-    const text = input.trim();
-    if ((!text && pendingAttachments.length === 0) || isStreaming || isProcessingVoice) return;
+  const performSend = useCallback(async (
+    text: string,
+    attachmentsForSend: AiAttachment[],
+    userBlocks: RichBlock[],
+    displayContent: string,
+    opts: { addUserMessage?: boolean } = {},
+  ) => {
+    const addUserMessage = opts.addUserMessage !== false;
+    const retryPayload: RetryPayload = { text, attachmentsForSend, userBlocks, displayContent };
 
-    setInput("");
-    inputRef.current?.focus();
-
-    const userBlocks: RichBlock[] = [];
-    const attachmentsForSend: AiAttachment[] = [];
-    for (const a of pendingAttachments) {
-      if (a.type === "image" && a.data) {
-        attachmentsForSend.push({ type: "image", data: a.data });
-        userBlocks.push({ type: "image", url: `data:image/jpeg;base64,${a.data}`, alt: "Yüklenen görsel" });
-      } else if (a.type === "pdf") {
-        attachmentsForSend.push({ type: "pdf", data: a.data, text: a.text, name: a.name });
-      }
+    if (addUserMessage) {
+      const userMsg: LocalMessage = { id: genId(), role: "user", content: displayContent, blocks: userBlocks };
+      setMessages((prev) => [...prev, userMsg]);
     }
-    const userPdfNames = pendingAttachments.filter(a => a.type === "pdf").map(a => a.name ?? "document.pdf");
-    const displayContent = text + (userPdfNames.length ? `\n📎 ${userPdfNames.join(", ")}` : "");
-    setPendingAttachments([]);
-
-    const userMsg: LocalMessage = { id: genId(), role: "user", content: displayContent, blocks: userBlocks };
-    setMessages((prev) => [...prev, userMsg]);
     setIsStreaming(true);
     setShowTyping(true);
     setActiveTools([]);
@@ -504,7 +504,7 @@ export default function AiChatScreen() {
         setShowTyping(false);
         setMessages((prev) => [
           ...prev,
-          { id: genId(), role: "assistant", content: "Bağlantı hatası oluştu. Tekrar deneyin." },
+          { id: genId(), role: "assistant", content: "Bağlantı hatası oluştu. Tekrar deneyin.", isError: true, retryPayload },
         ]);
         return;
       }
@@ -553,7 +553,7 @@ export default function AiChatScreen() {
         if (!assistantAdded) {
           setMessages((prev) => [
             ...prev,
-            { id: genId(), role: "assistant", content: `Hata: ${err}` },
+            { id: genId(), role: "assistant", content: `Hata: ${err}`, isError: true, retryPayload },
           ]);
         }
       },
@@ -583,7 +583,37 @@ export default function AiChatScreen() {
         },
       }
     );
-  }, [input, pendingAttachments, isStreaming, isProcessingVoice, convId, queryClient]);
+  }, [convId, queryClient, initialThreadId]);
+
+  const handleSend = useCallback(async () => {
+    const text = input.trim();
+    if ((!text && pendingAttachments.length === 0) || isStreaming || isProcessingVoice) return;
+
+    setInput("");
+    inputRef.current?.focus();
+
+    const userBlocks: RichBlock[] = [];
+    const attachmentsForSend: AiAttachment[] = [];
+    for (const a of pendingAttachments) {
+      if (a.type === "image" && a.data) {
+        attachmentsForSend.push({ type: "image", data: a.data });
+        userBlocks.push({ type: "image", url: `data:image/jpeg;base64,${a.data}`, alt: "Yüklenen görsel" });
+      } else if (a.type === "pdf") {
+        attachmentsForSend.push({ type: "pdf", data: a.data, text: a.text, name: a.name });
+      }
+    }
+    const userPdfNames = pendingAttachments.filter(a => a.type === "pdf").map(a => a.name ?? "document.pdf");
+    const displayContent = text + (userPdfNames.length ? `\n📎 ${userPdfNames.join(", ")}` : "");
+    setPendingAttachments([]);
+
+    await performSend(text, attachmentsForSend, userBlocks, displayContent);
+  }, [input, pendingAttachments, isStreaming, isProcessingVoice, performSend]);
+
+  const handleRetry = useCallback((errorMsgId: string, payload: RetryPayload) => {
+    if (isStreaming || isProcessingVoice) return;
+    setMessages((prev) => prev.filter((m) => m.id !== errorMsgId));
+    performSend(payload.text, payload.attachmentsForSend, payload.userBlocks, payload.displayContent, { addUserMessage: false });
+  }, [isStreaming, isProcessingVoice, performSend]);
 
   const reversed = [...messages].reverse();
 
@@ -883,16 +913,40 @@ export default function AiChatScreen() {
     }
     const sid = item.serverId;
     const r = item.rating ?? null;
+    const isErr = item.isError === true;
     return (
       <View style={styles.aiBubbleRow}>
         <View style={styles.aiAvatar}>
-          <Feather name="cpu" size={16} color={colors.primary} />
+          <Feather name={isErr ? "alert-circle" : "cpu"} size={16} color={isErr ? "#ef4444" : colors.primary} />
         </View>
         <View style={{ flex: 1 }}>
-          <View style={styles.aiBubble}>
-            {item.content ? <MarkdownText text={item.content} baseColor={colors.foreground} baseSize={14} /> : null}
+          <View style={[styles.aiBubble, isErr && { borderColor: "#ef4444", borderWidth: 1, backgroundColor: "#ef444411" }]}>
+            {item.content ? <MarkdownText text={item.content} baseColor={isErr ? "#ef4444" : colors.foreground} baseSize={14} /> : null}
             {item.blocks?.map((b, i) => <AiRichBlock key={i} block={b} />)}
           </View>
+          {isErr && item.retryPayload ? (
+            <Pressable
+              onPress={() => handleRetry(item.id, item.retryPayload!)}
+              disabled={isStreaming || isProcessingVoice}
+              style={({ pressed }) => ({
+                flexDirection: "row",
+                alignItems: "center",
+                gap: 6,
+                alignSelf: "flex-start",
+                marginTop: 6,
+                marginLeft: 4,
+                paddingHorizontal: 12,
+                paddingVertical: 7,
+                borderRadius: 16,
+                backgroundColor: colors.primary,
+                opacity: (isStreaming || isProcessingVoice) ? 0.4 : (pressed ? 0.7 : 1),
+              })}
+              hitSlop={6}
+            >
+              <Feather name="refresh-cw" size={13} color="#fff" />
+              <Text style={{ color: "#fff", fontSize: 13, fontFamily: "Inter_600SemiBold" }}>Tekrar Dene</Text>
+            </Pressable>
+          ) : null}
           {sid ? (
             <View style={{ flexDirection: "row", gap: 6, marginTop: 4, marginLeft: 4 }}>
               <Pressable
