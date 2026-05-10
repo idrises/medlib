@@ -1,0 +1,74 @@
+{
+  "expo": {
+    "name": "MedLib",
+    "slug": "medlib",
+    "version": "1.0.0",
+    "orientation": "default",
+    "icon": "./assets/images/icon.png",
+    "scheme": "medlib",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "splash": {
+      "image": "./assets/images/icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#D62B2B"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.codex.MakaleSwiftUI.iOS",
+      "config": {
+        "usesNonExemptEncryption": false
+      },
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false
+      }
+    },
+    "android": {
+      "package": "com.codex.makaleswiftui"
+    },
+    "web": {
+      "favicon": "./assets/images/icon.png"
+    },
+    "plugins": [
+      [
+        "expo-router",
+        {
+          "origin": "https://replit.com/"
+        }
+      ],
+      "expo-font",
+      "expo-web-browser",
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/images/icon.png",
+          "color": "#D62B2B"
+        }
+      ],
+      [
+        "@config-plugins/react-native-webrtc",
+        {
+          "cameraPermission": "MedLib AI sesli sohbet için mikrofona erişmek istiyor.",
+          "microphonePermission": "MedLib AI sesli sohbet için mikrofona erişmek istiyor."
+        }
+      ]
+    ],
+    "experiments": {
+      "typedRoutes": true,
+      "reactCompiler": true
+    },
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/3ffbc62d-b6e6-4d81-b6eb-3b6351e61bb6",
+      "checkAutomatically": "ON_LOAD",
+      "fallbackToCacheTimeout": 0
+    },
+    "extra": {
+      "eas": {
+        "projectId": "3ffbc62d-b6e6-4d81-b6eb-3b6351e61bb6"
+      }
+    }
+  }
+}
