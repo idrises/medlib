@@ -50,6 +50,7 @@ import {
 } from "@/services/voiceApi";
 import AiRichBlock, { type RichBlock } from "@/components/AiRichBlock";
 import MarkdownText from "@/components/MarkdownText";
+import MessageActionBar from "@/components/MessageActionBar";
 
 const TOOL_LABELS: Record<string, string> = {
   search_library: "Kütüphane aranıyor",
@@ -947,29 +948,14 @@ export default function AiChatScreen() {
               <Text style={{ color: "#fff", fontSize: 13, fontFamily: "Inter_600SemiBold" }}>Tekrar Dene</Text>
             </Pressable>
           ) : null}
-          {sid ? (
-            <View style={{ flexDirection: "row", gap: 6, marginTop: 4, marginLeft: 4 }}>
-              <Pressable
-                onPress={() => handleRate(item.id, sid, 1, r)}
-                style={({ pressed }) => ({
-                  padding: 6, borderRadius: 14, opacity: pressed ? 0.5 : 1,
-                  backgroundColor: r === 1 ? colors.primary + "22" : "transparent",
-                })}
-                hitSlop={8}
-              >
-                <Feather name="thumbs-up" size={14} color={r === 1 ? colors.primary : colors.muted} />
-              </Pressable>
-              <Pressable
-                onPress={() => handleRate(item.id, sid, -1, r)}
-                style={({ pressed }) => ({
-                  padding: 6, borderRadius: 14, opacity: pressed ? 0.5 : 1,
-                  backgroundColor: r === -1 ? "#ef444422" : "transparent",
-                })}
-                hitSlop={8}
-              >
-                <Feather name="thumbs-down" size={14} color={r === -1 ? "#ef4444" : colors.muted} />
-              </Pressable>
-            </View>
+          {sid && !isErr && item.content ? (
+            <MessageActionBar
+              messageId={item.id}
+              content={item.content}
+              rating={r}
+              onRate={(newRating) => handleRate(item.id, sid, newRating, r)}
+              disabled={isStreaming}
+            />
           ) : null}
         </View>
       </View>
