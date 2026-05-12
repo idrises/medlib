@@ -287,22 +287,55 @@ export default function AiChatScreen() {
       const fallbackName = a.name ?? "dosya";
       const declaredMime: string =
         (a as { mimeType?: string }).mimeType ?? "application/octet-stream";
-      // Optimistic chip while the multipart upload is in flight; the
-      // user gets immediate feedback and we replace it with the
-      // server-confirmed metadata when the response arrives.
+      const isPdf =
+        declaredMime === "application/pdf" ||
+        fallbackName.toLowerCase().endsWith(".pdf");
+
+      // Optimistic chip while the multipart upload is in flight. PDFs
+      // continue to render as the legacy "pdf" chip so the existing
+      // chat-send path (which inlines base64) still works — Task #139
+      // will switch over to fileId-only. Non-PDF files use the new
+      // "file" chip and only live in storage for now.
       setPendingAttachments((prev) => [
         ...prev,
         {
           id: localId,
-          type: "file",
+          type: isPdf ? "pdf" : "file",
           name: fallbackName,
           mimeType: declaredMime,
           sizeBytes: typeof a.size === "number" ? a.size : undefined,
           uploading: true,
         },
       ]);
+
+      // For PDFs, ALSO grab the base64 for the legacy chat backend so
+      // we don't regress PDF analysis while the new fileId path is
+      // being wired up. Run in parallel with the storage upload.
+      const base64Promise: Promise<string | undefined> = isPdf
+        ? (async () => {
+            try {
+              const resp = await fetch(a.uri);
+              const blob = await resp.blob();
+              return await new Promise<string>((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onloadend = () => {
+                  const r = String(reader.result ?? "");
+                  resolve(r.includes(",") ? r.split(",")[1] : r);
+                };
+                reader.onerror = reject;
+                reader.readAsDataURL(blob);
+              });
+            } catch {
+              return undefined;
+            }
+          })()
+        : Promise.resolve(undefined);
+
       try {
-        const uploaded = await uploadUserFile(a.uri, fallbackName, declaredMime);
+        const [uploaded, base64] = await Promise.all([
+          uploadUserFile(a.uri, fallbackName, declaredMime),
+          base64Promise,
+        ]);
         setPendingAttachments((prev) =>
           prev.map((p) =>
             p.id === localId
@@ -313,6 +346,7 @@ export default function AiChatScreen() {
                   name: uploaded.name,
                   mimeType: uploaded.mimeType,
                   sizeBytes: uploaded.sizeBytes,
+                  data: base64,
                 }
               : p,
           ),
