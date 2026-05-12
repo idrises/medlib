@@ -35,6 +35,8 @@ export type Presentation = {
   slideCount: number;
   withImages: boolean;
   pptxBytes: number;
+  status?: "processing" | "ready" | "failed";
+  error?: string | null;
   createdAt: string;
   outline: Outline | null;
 };

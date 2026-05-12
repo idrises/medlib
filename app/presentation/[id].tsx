@@ -3,8 +3,8 @@ import { Stack, useLocalSearchParams, useRouter } from "expo-router";
 import * as Sharing from "expo-sharing";
 import * as FileSystem from "expo-file-system/legacy";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import React, { useEffect, useState } from "react";
-import { ActivityIndicator, Alert, Linking, Platform, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import React, { useEffect, useRef, useState } from "react";
+import { ActivityIndicator, Alert, AppState, Linking, Platform, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { useColors } from "@/hooks/useColors";
@@ -21,19 +21,42 @@ export default function PresentationDetailScreen() {
   const [err, setErr] = useState<string | null>(null);
   const [downloading, setDownloading] = useState(false);
 
+  const cancelledRef = useRef(false);
   useEffect(() => {
-    let cancelled = false;
-    (async () => {
+    cancelledRef.current = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
+    const fetchOnce = async () => {
       try {
         const p = await getPresentation(numericId);
-        if (!cancelled) setPres(p);
+        if (cancelledRef.current) return;
+        setPres(p);
+        setErr(null);
+        // processing ise tekrar poll et
+        if (p.status === "processing") {
+          timer = setTimeout(fetchOnce, 4000);
+        }
       } catch (e: any) {
-        if (!cancelled) setErr(e?.message ?? "Yüklenemedi");
+        if (cancelledRef.current) return;
+        setErr(e?.message ?? "Yüklenemedi");
       } finally {
-        if (!cancelled) setLoading(false);
+        if (!cancelledRef.current) setLoading(false);
       }
-    })();
-    return () => { cancelled = true; };
+    };
+
+    fetchOnce();
+    const sub = AppState.addEventListener("change", (next) => {
+      if (next === "active") {
+        if (timer) { clearTimeout(timer); timer = null; }
+        fetchOnce();
+      }
+    });
+
+    return () => {
+      cancelledRef.current = true;
+      if (timer) clearTimeout(timer);
+      sub.remove();
+    };
   }, [numericId]);
 
   const handleDownload = async () => {
@@ -86,6 +109,8 @@ export default function PresentationDetailScreen() {
   }
 
   const slides = pres.outline?.slides ?? [];
+  const isProcessing = pres.status === "processing";
+  const isFailed = pres.status === "failed";
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.background }}>
@@ -95,15 +120,48 @@ export default function PresentationDetailScreen() {
           <Feather name="arrow-left" size={22} color="#fff" />
         </Pressable>
         <View style={{ flex: 1, minWidth: 0 }}>
-          <Text style={styles.headerKind}>SUNUM · {pres.slideCount} slayt</Text>
+          <Text style={styles.headerKind}>
+            {isProcessing ? "SUNUM · HAZIRLANIYOR…" : isFailed ? "SUNUM · HATA" : `SUNUM · ${pres.slideCount} slayt`}
+          </Text>
           <Text style={styles.headerTitle} numberOfLines={2}>{pres.title}</Text>
         </View>
-        <Pressable onPress={handleDownload} style={styles.iconBtn} disabled={downloading}>
-          {downloading
-            ? <ActivityIndicator color="#fff" />
-            : <Feather name="download" size={22} color="#fff" />}
-        </Pressable>
+        {!isProcessing && !isFailed ? (
+          <Pressable onPress={handleDownload} style={styles.iconBtn} disabled={downloading}>
+            {downloading
+              ? <ActivityIndicator color="#fff" />
+              : <Feather name="download" size={22} color="#fff" />}
+          </Pressable>
+        ) : isProcessing ? (
+          <View style={styles.iconBtn}><ActivityIndicator color="#fff" /></View>
+        ) : null}
       </View>
+
+      {isProcessing ? (
+        <View style={[styles.center, { flex: 1, backgroundColor: colors.background, padding: 24 }]}>
+          <ActivityIndicator color={colors.primary} size="large" />
+          <Text style={{ color: colors.foreground, marginTop: 16, fontSize: 15, fontFamily: "Inter_600SemiBold", textAlign: "center" }}>
+            Sunum hazırlanıyor…
+          </Text>
+          <Text style={{ color: colors.mutedForeground, marginTop: 8, fontSize: 13, textAlign: "center", lineHeight: 18 }}>
+            30 sn - 2 dk sürebilir. Uygulamayı arka plana alabilirsin{"\n"}— ön plana döndüğünde otomatik tazelenir.
+          </Text>
+        </View>
+      ) : isFailed ? (
+        <View style={[styles.center, { flex: 1, backgroundColor: colors.background, padding: 24 }]}>
+          <Feather name="alert-triangle" size={36} color="#ef4444" />
+          <Text style={{ color: colors.foreground, marginTop: 12, fontSize: 15, fontFamily: "Inter_600SemiBold", textAlign: "center" }}>
+            Sunum üretilemedi
+          </Text>
+          <Text style={{ color: colors.mutedForeground, marginTop: 8, fontSize: 13, textAlign: "center" }}>
+            {pres.error ?? "Bilinmeyen hata"}
+          </Text>
+          <Pressable onPress={() => router.back()} style={{ marginTop: 18, paddingHorizontal: 18, paddingVertical: 10, borderRadius: 8, backgroundColor: colors.primary }}>
+            <Text style={{ color: "#fff", fontFamily: "Inter_600SemiBold" }}>Geri</Text>
+          </Pressable>
+        </View>
+      ) : null}
+
+      {!isProcessing && !isFailed ? (
 
       <ScrollView contentContainerStyle={{ padding: 14, paddingBottom: insets.bottom + 30 }}>
         {pres.outline?.subtitle ? (
@@ -158,6 +216,7 @@ export default function PresentationDetailScreen() {
           <Text style={styles.bigDownloadText}>PPTX olarak indir</Text>
         </Pressable>
       </ScrollView>
+      ) : null}
     </View>
   );
 }

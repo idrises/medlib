@@ -1,9 +1,10 @@
-import React, { useState } from "react";
-import { Image as RNImage, Linking, Platform, Pressable, StyleSheet, Text, View } from "react-native";
+import React, { useEffect, useRef, useState } from "react";
+import { ActivityIndicator, AppState, Image as RNImage, Linking, Platform, Pressable, StyleSheet, Text, View } from "react-native";
 import { Feather } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 
 import { useColors } from "@/hooks/useColors";
+import { getPresentation } from "@/services/presentationApi";
 
 let ExpoImage: any = null;
 try { ExpoImage = require("expo-image").Image; } catch {}
@@ -44,6 +45,7 @@ export type RichBlock =
       subtitle?: string;
       slideCount: number;
       withImages: boolean;
+      status?: "processing" | "ready" | "failed";
     };
 
 const PALETTE = ["#3b82f6", "#10b981", "#f59e0b", "#ef4444", "#8b5cf6", "#ec4899", "#06b6d4", "#84cc16"];
@@ -66,33 +68,104 @@ export default function AiRichBlock({ block }: Props) {
 function PresentationBlock({ block }: { block: Extract<RichBlock, { type: "presentation" }> }) {
   const colors = useColors();
   const router = useRouter();
-  const open = () => router.push({ pathname: "/presentation/[id]" as any, params: { id: String(block.id) } });
+
+  // Live status — başlangıç block.status (server'dan gelen), sonra poll ile güncellenir.
+  const initialStatus: "processing" | "ready" | "failed" = block.status ?? "ready";
+  const [status, setStatus] = useState<"processing" | "ready" | "failed">(initialStatus);
+  const [title, setTitle] = useState<string>(block.title);
+  const [slideCount, setSlideCount] = useState<number>(block.slideCount);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const cancelledRef = useRef(false);
+
+  // Poll while processing; stop on ready/failed. Re-poll when app returns to foreground.
+  useEffect(() => {
+    cancelledRef.current = false;
+    if (status !== "processing") return;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
+    const tick = async () => {
+      if (cancelledRef.current) return;
+      try {
+        const p = await getPresentation(block.id);
+        if (cancelledRef.current) return;
+        const s = (p.status as any) ?? "ready";
+        if (p.title) setTitle(p.title);
+        if (p.slideCount) setSlideCount(p.slideCount);
+        if (s === "ready") { setStatus("ready"); return; }
+        if (s === "failed") { setStatus("failed"); setErrorMsg(p.error ?? "Üretim başarısız"); return; }
+      } catch {
+        // sessizce sürdür — geçici ağ hatası olabilir
+      }
+      timer = setTimeout(tick, 4000);
+    };
+
+    tick();
+    const sub = AppState.addEventListener("change", (next) => {
+      if (next === "active" && status === "processing") {
+        // ön plana dönüldü → hemen yenile
+        if (timer) { clearTimeout(timer); timer = null; }
+        tick();
+      }
+    });
+
+    return () => {
+      cancelledRef.current = true;
+      if (timer) clearTimeout(timer);
+      sub.remove();
+    };
+  }, [status, block.id]);
+
+  const isProcessing = status === "processing";
+  const isFailed = status === "failed";
+  const open = () => {
+    if (isProcessing || isFailed) return;
+    router.push({ pathname: "/presentation/[id]" as any, params: { id: String(block.id) } });
+  };
+
   return (
     <Pressable
       onPress={open}
-      style={({ pressed }) => [styles.card, { backgroundColor: colors.card, borderColor: colors.border, opacity: pressed ? 0.8 : 1, alignItems: "center" }]}
+      disabled={isProcessing || isFailed}
+      style={({ pressed }) => [
+        styles.card,
+        { backgroundColor: colors.card, borderColor: colors.border, opacity: pressed && !isProcessing && !isFailed ? 0.8 : 1, alignItems: "center" },
+      ]}
     >
-      <View style={[styles.cardIcon, { backgroundColor: colors.primary }]}>
-        <Feather name="layout" size={22} color="#fff" />
+      <View style={[styles.cardIcon, { backgroundColor: isFailed ? "#ef4444" : colors.primary }]}>
+        {isProcessing
+          ? <ActivityIndicator color="#fff" size="small" />
+          : <Feather name={isFailed ? "alert-triangle" : "layout"} size={22} color="#fff" />}
       </View>
       <View style={{ flex: 1, minWidth: 0 }}>
         <Text style={[styles.cardKind, { color: colors.mutedForeground }]} numberOfLines={1}>
-          SUNUM · {block.slideCount} SLAYT{block.withImages ? " · GÖRSELLİ" : ""}
+          {isProcessing ? `SUNUM · HAZIRLANIYOR…` : isFailed ? `SUNUM · HATA` : `SUNUM · ${slideCount} SLAYT${block.withImages ? " · GÖRSELLİ" : ""}`}
         </Text>
         <Text style={[styles.cardTitle, { color: colors.foreground }]} numberOfLines={2}>
-          {block.title}
+          {title}
         </Text>
-        {block.subtitle ? (
+        {isProcessing ? (
+          <Text style={[styles.cardSub, { color: colors.mutedForeground }]} numberOfLines={2}>
+            30 sn - 2 dk sürebilir. Uygulamayı arka plana alabilirsin, hazır olunca burada görünecek.
+          </Text>
+        ) : isFailed ? (
+          <Text style={[styles.cardSub, { color: "#ef4444" }]} numberOfLines={3}>
+            {errorMsg ?? "Sunum üretilemedi"}
+          </Text>
+        ) : block.subtitle ? (
           <Text style={[styles.cardSub, { color: colors.mutedForeground }]} numberOfLines={1}>{block.subtitle}</Text>
         ) : null}
-        <View style={styles.cardActions}>
-          <View style={[styles.cardBtn, { backgroundColor: colors.primary }]}>
-            <Feather name="eye" size={12} color={colors.primaryForeground} />
-            <Text style={[styles.cardBtnText, { color: colors.primaryForeground }]}>Önizle &amp; İndir</Text>
+        {!isProcessing && !isFailed ? (
+          <View style={styles.cardActions}>
+            <View style={[styles.cardBtn, { backgroundColor: colors.primary }]}>
+              <Feather name="eye" size={12} color={colors.primaryForeground} />
+              <Text style={[styles.cardBtnText, { color: colors.primaryForeground }]}>Önizle &amp; İndir</Text>
+            </View>
           </View>
-        </View>
+        ) : null}
       </View>
-      <Feather name="chevron-right" size={20} color={colors.mutedForeground} />
+      {!isProcessing && !isFailed
+        ? <Feather name="chevron-right" size={20} color={colors.mutedForeground} />
+        : null}
     </Pressable>
   );
 }
