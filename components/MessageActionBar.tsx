@@ -1,7 +1,8 @@
 import { Feather } from "@expo/vector-icons";
 import * as Clipboard from "expo-clipboard";
-import React, { useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import {
+  ActivityIndicator,
   Alert,
   Modal,
   Pressable,
@@ -9,12 +10,10 @@ import {
   Share,
   StyleSheet,
   Text,
-  ToastAndroid,
   View,
-  Platform,
 } from "react-native";
 import { useColors } from "@/hooks/useColors";
-import { speak, stop, useActiveSpeechId } from "@/services/speechBus";
+import { speak, stop, useSpeechState } from "@/services/speechBus";
 import { MoreActionsSheet } from "@/components/MoreActionsSheet";
 
 interface MessageActionBarProps {
@@ -25,14 +24,6 @@ interface MessageActionBarProps {
   disabled?: boolean;
 }
 
-function showToast(msg: string) {
-  if (Platform.OS === "android") {
-    ToastAndroid.show(msg, ToastAndroid.SHORT);
-  } else {
-    Alert.alert(msg);
-  }
-}
-
 export default function MessageActionBar({
   messageId,
   content,
@@ -41,18 +32,34 @@ export default function MessageActionBar({
   disabled,
 }: MessageActionBarProps) {
   const colors = useColors();
-  const activeSpeechId = useActiveSpeechId();
-  const speaking = activeSpeechId === messageId;
+  const speechState = useSpeechState(messageId);
+  const isLoading = speechState === "loading";
+  const isPlaying = speechState === "playing";
+  const speakActive = isLoading || isPlaying;
+
   const [moreOpen, setMoreOpen] = useState(false);
   const [rawOpen, setRawOpen] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const [rawCopied, setRawCopied] = useState(false);
+  const copiedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const rawCopiedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (copiedTimer.current) clearTimeout(copiedTimer.current);
+      if (rawCopiedTimer.current) clearTimeout(rawCopiedTimer.current);
+    };
+  }, []);
 
   const handleCopy = async () => {
     await Clipboard.setStringAsync(content);
-    showToast("Kopyalandı");
+    setCopied(true);
+    if (copiedTimer.current) clearTimeout(copiedTimer.current);
+    copiedTimer.current = setTimeout(() => setCopied(false), 1500);
   };
 
   const handleSpeak = () => {
-    if (speaking) {
+    if (speakActive) {
       stop();
     } else {
       speak(messageId, content);
@@ -69,15 +76,42 @@ export default function MessageActionBar({
 
   const iconColor = colors.mutedForeground;
   const activeColor = colors.primary;
+  const successColor = "#16a34a";
 
   return (
     <>
       <View style={styles.container}>
-        <Pressable accessibilityRole="button" accessibilityLabel="Mesajı kopyala" onPress={handleCopy} style={({ pressed }) => [styles.iconBtn, pressed && styles.pressed]} hitSlop={12} disabled={disabled}>
-          <Feather name="copy" size={16} color={iconColor} />
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={copied ? "Kopyalandı" : "Mesajı kopyala"}
+          onPress={handleCopy}
+          style={({ pressed }) => [styles.iconBtn, pressed && styles.pressed]}
+          hitSlop={12}
+          disabled={disabled}
+        >
+          <Feather
+            name={copied ? "check" : "copy"}
+            size={16}
+            color={copied ? successColor : iconColor}
+          />
         </Pressable>
-        <Pressable accessibilityRole="button" accessibilityLabel={speaking ? "Seslendirmeyi durdur" : "Mesajı seslendir"} onPress={handleSpeak} style={({ pressed }) => [styles.iconBtn, pressed && styles.pressed]} hitSlop={12} disabled={disabled}>
-          <Feather name={speaking ? "pause-circle" : "volume-2"} size={16} color={speaking ? activeColor : iconColor} />
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={isPlaying ? "Seslendirmeyi durdur" : isLoading ? "Ses yükleniyor" : "Mesajı seslendir"}
+          onPress={handleSpeak}
+          style={({ pressed }) => [styles.iconBtn, pressed && styles.pressed]}
+          hitSlop={12}
+          disabled={disabled}
+        >
+          {isLoading ? (
+            <ActivityIndicator size="small" color={activeColor} style={styles.spinner} />
+          ) : (
+            <Feather
+              name={isPlaying ? "pause-circle" : "volume-2"}
+              size={16}
+              color={isPlaying ? activeColor : iconColor}
+            />
+          )}
         </Pressable>
         <Pressable
           accessibilityRole="button"
@@ -145,11 +179,19 @@ export default function MessageActionBar({
               <Text selectable style={[styles.rawBody, { color: colors.foreground }]}>{content}</Text>
             </ScrollView>
             <Pressable
-              onPress={async () => { await Clipboard.setStringAsync(content); showToast("Kopyalandı"); }}
-              style={({ pressed }) => [styles.rawCopyBtn, { backgroundColor: pressed ? colors.primary + "cc" : colors.primary }]}
+              onPress={async () => {
+                await Clipboard.setStringAsync(content);
+                setRawCopied(true);
+                if (rawCopiedTimer.current) clearTimeout(rawCopiedTimer.current);
+                rawCopiedTimer.current = setTimeout(() => setRawCopied(false), 1500);
+              }}
+              style={({ pressed }) => [
+                styles.rawCopyBtn,
+                { backgroundColor: rawCopied ? successColor : pressed ? colors.primary + "cc" : colors.primary },
+              ]}
             >
-              <Feather name="copy" size={14} color="#fff" />
-              <Text style={styles.rawCopyText}>Tümünü kopyala</Text>
+              <Feather name={rawCopied ? "check" : "copy"} size={14} color="#fff" />
+              <Text style={styles.rawCopyText}>{rawCopied ? "Kopyalandı" : "Tümünü kopyala"}</Text>
             </Pressable>
           </Pressable>
         </Pressable>
@@ -170,6 +212,10 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
     paddingHorizontal: 9,
     borderRadius: 14,
+  },
+  spinner: {
+    width: 16,
+    height: 16,
   },
   pressed: {
     opacity: 0.5,
