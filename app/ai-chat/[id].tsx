@@ -48,6 +48,7 @@ import {
   stopCurrentPlayback,
   onSilenceDetected,
 } from "@/services/voiceApi";
+import { uploadUserFile } from "@/services/filesApi";
 import AiRichBlock, { type RichBlock } from "@/components/AiRichBlock";
 import MarkdownText from "@/components/MarkdownText";
 import MessageActionBar from "@/components/MessageActionBar";
@@ -104,11 +105,18 @@ interface LocalMessage {
 
 interface PendingAttachment {
   id: string;
-  type: "image" | "pdf";
+  type: "image" | "pdf" | "file";
   data?: string;
   text?: string;
   name?: string;
   preview?: string;
+  // Populated for `type: "file"` (and any picker that uses the new
+  // /api/files/upload endpoint). Once Task #139 lands, the chat send
+  // path will reference these by fileId instead of inlining base64.
+  fileId?: string;
+  mimeType?: string;
+  sizeBytes?: number;
+  uploading?: boolean;
 }
 
 export default function AiChatScreen() {
@@ -262,45 +270,60 @@ export default function AiChatScreen() {
     }
   }, []);
 
-  const pickPdf = useCallback(async () => {
+  const pickFile = useCallback(async () => {
     setShowAttachMenu(false);
     if (!DocumentPicker) {
-      Alert.alert("Mevcut değil", "PDF yükleme için uygulamayı güncelleyin.");
+      Alert.alert("Mevcut değil", "Dosya yükleme için uygulamayı güncelleyin.");
       return;
     }
     try {
       const result = await DocumentPicker.getDocumentAsync({
-        type: "application/pdf",
+        type: "*/*",
         copyToCacheDirectory: true,
-        base64: true,
       } as any);
-      if (!result.canceled && result.assets?.[0]) {
-        const a = result.assets[0];
-        let base64 = (a as any).base64 as string | undefined;
-        if (!base64 && a.uri) {
-          try {
-            const resp = await fetch(a.uri);
-            const blob = await resp.blob();
-            base64 = await new Promise<string>((resolve, reject) => {
-              const reader = new FileReader();
-              reader.onloadend = () => {
-                const r = String(reader.result ?? "");
-                resolve(r.includes(",") ? r.split(",")[1] : r);
-              };
-              reader.onerror = reject;
-              reader.readAsDataURL(blob);
-            });
-          } catch {}
-        }
-        setPendingAttachments(prev => [...prev, {
-          id: genId(),
-          type: "pdf",
-          data: base64,
-          name: a.name ?? "document.pdf",
-        }]);
+      if (result.canceled || !result.assets?.[0]) return;
+      const a = result.assets[0];
+      const localId = genId();
+      const fallbackName = a.name ?? "dosya";
+      const declaredMime: string =
+        (a as { mimeType?: string }).mimeType ?? "application/octet-stream";
+      // Optimistic chip while the multipart upload is in flight; the
+      // user gets immediate feedback and we replace it with the
+      // server-confirmed metadata when the response arrives.
+      setPendingAttachments((prev) => [
+        ...prev,
+        {
+          id: localId,
+          type: "file",
+          name: fallbackName,
+          mimeType: declaredMime,
+          sizeBytes: typeof a.size === "number" ? a.size : undefined,
+          uploading: true,
+        },
+      ]);
+      try {
+        const uploaded = await uploadUserFile(a.uri, fallbackName, declaredMime);
+        setPendingAttachments((prev) =>
+          prev.map((p) =>
+            p.id === localId
+              ? {
+                  ...p,
+                  uploading: false,
+                  fileId: uploaded.fileId,
+                  name: uploaded.name,
+                  mimeType: uploaded.mimeType,
+                  sizeBytes: uploaded.sizeBytes,
+                }
+              : p,
+          ),
+        );
+      } catch (err) {
+        setPendingAttachments((prev) => prev.filter((p) => p.id !== localId));
+        const msg = err instanceof Error ? err.message : "Dosya yüklenemedi.";
+        Alert.alert("Yükleme hatası", msg);
       }
     } catch (e) {
-      Alert.alert("Hata", "PDF seçilemedi.");
+      Alert.alert("Hata", "Dosya seçilemedi.");
     }
   }, []);
 
@@ -590,6 +613,14 @@ export default function AiChatScreen() {
     const text = input.trim();
     if ((!text && pendingAttachments.length === 0) || isStreaming || isProcessingVoice) return;
 
+    // Block sending while any pending file is still uploading — otherwise
+    // the user could fire off a chat that references a fileId the server
+    // hasn't yet acknowledged.
+    if (pendingAttachments.some((a) => a.uploading)) {
+      Alert.alert("Bekleyin", "Dosya yüklemesi tamamlanıyor.");
+      return;
+    }
+
     setInput("");
     inputRef.current?.focus();
 
@@ -602,6 +633,10 @@ export default function AiChatScreen() {
       } else if (a.type === "pdf") {
         attachmentsForSend.push({ type: "pdf", data: a.data, text: a.text, name: a.name });
       }
+      // `type === "file"` (new fileId-based uploads) are not yet wired
+      // into the chat backend — Task #139 will do that. For now they
+      // still appear as pending chips and remain saved in the user's
+      // file storage; we just don't include them in the chat payload.
     }
     const userPdfNames = pendingAttachments.filter(a => a.type === "pdf").map(a => a.name ?? "document.pdf");
     const displayContent = text + (userPdfNames.length ? `\n📎 ${userPdfNames.join(", ")}` : "");
@@ -1192,9 +1227,9 @@ export default function AiChatScreen() {
                 <Feather name="camera" size={18} color={colors.primary} />
                 <Text style={styles.attachMenuText}>Fotoğraf çek</Text>
               </Pressable>
-              <Pressable style={styles.attachMenuItem} onPress={pickPdf}>
+              <Pressable style={styles.attachMenuItem} onPress={pickFile}>
                 <Feather name="file-text" size={18} color={colors.primary} />
-                <Text style={styles.attachMenuText}>PDF yükle</Text>
+                <Text style={styles.attachMenuText}>Dosya yükle</Text>
               </Pressable>
             </View>
           </Pressable>
@@ -1203,19 +1238,31 @@ export default function AiChatScreen() {
         <View style={styles.inputWrapper}>
           {pendingAttachments.length > 0 ? (
             <View style={styles.attachStrip}>
-              {pendingAttachments.map(a => (
-                <Pressable key={a.id} style={styles.attachChip} onPress={() => removeAttachment(a.id)}>
-                  {a.type === "image" && a.preview ? (
-                    <Image source={{ uri: a.preview }} style={styles.attachThumb} />
-                  ) : (
-                    <Feather name="file-text" size={14} color={colors.foreground} />
-                  )}
-                  <Text style={styles.attachChipText} numberOfLines={1}>
-                    {a.type === "pdf" ? (a.name ?? "PDF") : "Görsel"}
-                  </Text>
-                  <Feather name="x" size={14} color={colors.mutedForeground} />
-                </Pressable>
-              ))}
+              {pendingAttachments.map(a => {
+                const label =
+                  a.type === "image"
+                    ? "Görsel"
+                    : a.type === "pdf"
+                      ? (a.name ?? "PDF")
+                      : (a.name ?? "Dosya");
+                return (
+                  <Pressable key={a.id} style={styles.attachChip} onPress={() => removeAttachment(a.id)}>
+                    {a.type === "image" && a.preview ? (
+                      <Image source={{ uri: a.preview }} style={styles.attachThumb} />
+                    ) : (
+                      <Feather name="file-text" size={14} color={colors.foreground} />
+                    )}
+                    <Text style={styles.attachChipText} numberOfLines={1}>
+                      {a.uploading ? `${label} · yükleniyor…` : label}
+                    </Text>
+                    {a.uploading ? (
+                      <ActivityIndicator size="small" color={colors.mutedForeground} />
+                    ) : (
+                      <Feather name="x" size={14} color={colors.mutedForeground} />
+                    )}
+                  </Pressable>
+                );
+              })}
             </View>
           ) : null}
           {isRecording && (
