@@ -85,6 +85,16 @@ function genId() {
   return `m-${Date.now()}-${msgCounter}-${Math.random().toString(36).slice(2, 7)}`;
 }
 
+// Server emits `[[cite:fileId:pageNum]]` markers inline so the model can
+// anchor every claim to a specific page; the same stream also pushes
+// dedicated `file_citation` rich blocks. We render the chips from the
+// blocks and strip the inline markers from the visible text so the
+// reader doesn't see raw bracket noise.
+const CITE_RE = /\s*\[\[cite:[A-Za-z0-9_\-]{1,80}(?::\d{1,5})?\]\]/g;
+function stripCiteMarkers(s: string): string {
+  return s.replace(CITE_RE, "").replace(/[ \t]+\n/g, "\n");
+}
+
 interface RetryPayload {
   text: string;
   attachmentsForSend: AiAttachment[];
@@ -667,16 +677,30 @@ export default function AiChatScreen() {
       } else if (a.type === "pdf") {
         attachmentsForSend.push({ type: "pdf", data: a.data, text: a.text, name: a.name });
       }
-      // `type === "file"` (new fileId-based uploads) are not yet wired
-      // into the chat backend — Task #139 will do that. For now they
-      // still appear as pending chips and remain saved in the user's
-      // file storage; we just don't include them in the chat payload.
+      // `type === "file"` uploads are stored in the user file panel via
+      // /api/files/upload and referenced by fileId. The chat payload
+      // doesn't carry the bytes — instead we surface a `(file_id: ...)`
+      // hint inside the user message text so the agent picks it up via
+      // search_user_files / get_file_page on the server side. The chip
+      // strip in the bubble already shows the user a friendly icon.
     }
     const userPdfNames = pendingAttachments.filter(a => a.type === "pdf").map(a => a.name ?? "document.pdf");
-    const displayContent = text + (userPdfNames.length ? `\n📎 ${userPdfNames.join(", ")}` : "");
+    const userFiles = pendingAttachments.filter(a => a.type === "file" && a.fileId);
+    const fileHint = userFiles.length
+      ? `\n\n[Sistem notu — kullanıcı şu dosya(lar)ı yükledi, gerekirse search_user_files / get_file_page ile incele: ${userFiles
+          .map((a) => `${a.name ?? "dosya"} (file_id: ${a.fileId})`)
+          .join(", ")}]`
+      : "";
+    const textForAi = text + fileHint;
+    const displayContent =
+      text +
+      (userPdfNames.length ? `\n📎 ${userPdfNames.join(", ")}` : "") +
+      (userFiles.length
+        ? `\n📎 ${userFiles.map((a) => a.name ?? "dosya").join(", ")}`
+        : "");
     setPendingAttachments([]);
 
-    await performSend(text, attachmentsForSend, userBlocks, displayContent);
+    await performSend(textForAi, attachmentsForSend, userBlocks, displayContent);
   }, [input, pendingAttachments, isStreaming, isProcessingVoice, performSend]);
 
   const handleRetry = useCallback((errorMsgId: string, payload: RetryPayload) => {
@@ -991,7 +1015,13 @@ export default function AiChatScreen() {
         </View>
         <View style={{ flex: 1 }}>
           <View style={[styles.aiBubble, isErr && { borderColor: "#ef4444", borderWidth: 1, backgroundColor: "#ef444411" }]}>
-            {item.content ? <MarkdownText text={item.content} baseColor={isErr ? "#ef4444" : colors.foreground} baseSize={14} /> : null}
+            {item.content ? (
+              <MarkdownText
+                text={stripCiteMarkers(item.content)}
+                baseColor={isErr ? "#ef4444" : colors.foreground}
+                baseSize={14}
+              />
+            ) : null}
             {item.blocks?.map((b, i) => <AiRichBlock key={i} block={b} />)}
           </View>
           {isErr && item.retryPayload ? (
