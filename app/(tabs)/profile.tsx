@@ -347,6 +347,14 @@ export default function ProfileScreen() {
                   <Feather name="cpu" size={16} color={colors.mutedForeground} />
                 </Pressable>
               ) : null}
+              {user?.aiAccess ? (
+                <Pressable
+                  style={{ width: 36, height: 36, borderRadius: 18, backgroundColor: colors.muted, alignItems: "center", justifyContent: "center" }}
+                  onPress={() => router.push("/files" as never)}
+                >
+                  <Feather name="folder" size={16} color={colors.mutedForeground} />
+                </Pressable>
+              ) : null}
             </View>
           </View>
           <Pressable
