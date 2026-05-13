@@ -170,6 +170,8 @@ interface PendingAttachment {
   mimeType?: string;
   sizeBytes?: number;
   uploading?: boolean;
+  /** 0..1 — populated while a multipart upload is in flight. */
+  uploadProgress?: number;
 }
 
 export default function AiChatScreen() {
@@ -409,7 +411,15 @@ export default function AiChatScreen() {
 
       try {
         const [uploaded, base64] = await Promise.all([
-          uploadUserFile(a.uri, fallbackName, declaredMime),
+          uploadUserFile(a.uri, fallbackName, declaredMime, {
+            onProgress: (frac) => {
+              setPendingAttachments((prev) =>
+                prev.map((p) =>
+                  p.id === localId ? { ...p, uploadProgress: frac } : p,
+                ),
+              );
+            },
+          }),
           base64Promise,
         ]);
         setPendingAttachments((prev) =>
@@ -1390,6 +1400,7 @@ export default function AiChatScreen() {
                     : a.type === "pdf"
                       ? (a.name ?? "PDF")
                       : (a.name ?? "Dosya");
+                const pct = Math.round((a.uploadProgress ?? 0) * 100);
                 return (
                   <Pressable key={a.id} style={styles.attachChip} onPress={() => removeAttachment(a.id)}>
                     {a.type === "image" && a.preview ? (
@@ -1397,9 +1408,34 @@ export default function AiChatScreen() {
                     ) : (
                       <Feather name="file-text" size={14} color={colors.foreground} />
                     )}
-                    <Text style={styles.attachChipText} numberOfLines={1}>
-                      {a.uploading ? `${label} · yükleniyor…` : label}
-                    </Text>
+                    <View style={{ flexShrink: 1, minWidth: 0 }}>
+                      <Text style={styles.attachChipText} numberOfLines={1}>
+                        {a.uploading
+                          ? a.uploadProgress && a.uploadProgress > 0
+                            ? `${label} · %${pct}`
+                            : `${label} · yükleniyor…`
+                          : label}
+                      </Text>
+                      {a.uploading ? (
+                        <View
+                          style={{
+                            height: 3,
+                            borderRadius: 2,
+                            backgroundColor: colors.border,
+                            marginTop: 4,
+                            overflow: "hidden",
+                          }}
+                        >
+                          <View
+                            style={{
+                              width: `${pct}%`,
+                              height: "100%",
+                              backgroundColor: colors.primary,
+                            }}
+                          />
+                        </View>
+                      ) : null}
+                    </View>
                     {a.uploading ? (
                       <ActivityIndicator size="small" color={colors.mutedForeground} />
                     ) : (
