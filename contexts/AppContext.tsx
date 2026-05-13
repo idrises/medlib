@@ -99,6 +99,7 @@ interface AppContextType {
   currentUserName: string;
 
   activities: ActivityItem[];
+  activitiesTotal: number;
   addActivity: (item: Omit<ActivityItem, "id" | "timestamp">) => void;
 
   videoProgresses: Record<string, VideoProgress>;
@@ -308,6 +309,7 @@ const _UNUSED_LEGACY_SAMPLE: Record<string, Message[]> = {
 
 export function AppProvider({ children }: { children: React.ReactNode }) {
   const [activities, setActivities] = useState<ActivityItem[]>([]);
+  const [activitiesTotal, setActivitiesTotal] = useState<number>(0);
   const [videoProgresses, setVideoProgresses] = useState<Record<string, VideoProgress>>({});
   const [likedItems, setLikedItems] = useState<LikedItem[]>([]);
   const [bookmarkedItems, setBookmarkedItems] = useState<BookmarkedItem[]>([]);
@@ -937,6 +939,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       });
       if (!r.ok) return;
       const d = await r.json();
+      if (typeof d?.totalCount === "number") setActivitiesTotal(d.totalCount);
       const recent = Array.isArray(d?.recent) ? d.recent : [];
       if (recent.length === 0) return;
       const fromServer: ActivityItem[] = recent
@@ -997,7 +1000,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     <AppContext.Provider value={{
       currentUserId: CURRENT_USER_ID,
       currentUserName: CURRENT_USER_NAME,
-      activities, addActivity,
+      activities, activitiesTotal, addActivity,
       videoProgresses, updateVideoProgress, getVideoProgress,
       likedItems, toggleLike, isLiked,
       bookmarkedItems, toggleBookmark, isBookmarked,
