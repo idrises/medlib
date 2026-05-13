@@ -1,0 +1,356 @@
+import { Feather } from "@expo/vector-icons";
+import * as FileSystem from "expo-file-system/legacy";
+import * as Sharing from "expo-sharing";
+import { useLocalSearchParams, useRouter } from "expo-router";
+import React, { useCallback, useEffect, useState } from "react";
+import {
+  ActivityIndicator,
+  Alert,
+  Platform,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+} from "react-native";
+import AsyncStorage from "@react-native-async-storage/async-storage";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+
+import { useColors } from "@/hooks/useColors";
+import { API_BASE_URL } from "@/services/api";
+import {
+  UserFileDto,
+  deleteUserFile,
+  getUserFile,
+} from "@/services/filesApi";
+
+function formatBytes(n: number): string {
+  if (!n || n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} KB`;
+  if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`;
+  return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`;
+}
+
+export default function FileDetailScreen() {
+  const colors = useColors();
+  const router = useRouter();
+  const insets = useSafeAreaInsets();
+  const params = useLocalSearchParams<{ id: string }>();
+  const fileId = String(params.id ?? "");
+
+  const [file, setFile] = useState<UserFileDto | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const f = await getUserFile(fileId);
+      setFile(f);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Dosya bulunamadı.";
+      setError(msg);
+    } finally {
+      setLoading(false);
+    }
+  }, [fileId]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const onOpen = async () => {
+    if (!file || busy) return;
+    setBusy(true);
+    try {
+      const token = await AsyncStorage.getItem("medlib_auth_token");
+      if (!token) throw new Error("Oturum bulunamadı.");
+      const safe = (file.name || "dosya").replace(/[\\/:"<>|?*\x00-\x1f]/g, "_");
+      const target = `${FileSystem.cacheDirectory}${file.fileId}-${safe}`;
+      const dl = await FileSystem.downloadAsync(
+        `${API_BASE_URL}/files/${file.fileId}/download`,
+        target,
+        { headers: { Authorization: `Bearer ${token}` } },
+      );
+      if (dl.status >= 400) throw new Error(`İndirme hatası (${dl.status})`);
+      if (Platform.OS === "web") {
+        if (typeof window !== "undefined") window.open(dl.uri, "_blank");
+      } else {
+        const can = await Sharing.isAvailableAsync();
+        if (can) await Sharing.shareAsync(dl.uri);
+        else Alert.alert("Açılamadı", "Bu cihazda paylaşım uygun değil.");
+      }
+    } catch (e) {
+      Alert.alert("Hata", e instanceof Error ? e.message : "Dosya açılamadı.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const onAskAi = () => {
+    if (!file) return;
+    router.push({
+      pathname: "/ai-chat/[id]",
+      params: {
+        id: "new",
+        prefill: `📎 "${file.name}" dosyam hakkında bana yardım et.`,
+      },
+    } as never);
+  };
+
+  const onDelete = () => {
+    if (!file) return;
+    Alert.alert(
+      "Dosyayı sil",
+      `"${file.name}" silinecek. Bu işlem geri alınamaz.`,
+      [
+        { text: "İptal", style: "cancel" },
+        {
+          text: "Sil",
+          style: "destructive",
+          onPress: async () => {
+            try {
+              await deleteUserFile(file.fileId);
+              router.back();
+            } catch (e) {
+              Alert.alert("Hata", e instanceof Error ? e.message : "Silinemedi.");
+            }
+          },
+        },
+      ],
+    );
+  };
+
+  const topPad = Platform.OS === "web" ? 24 : insets.top;
+
+  return (
+    <View style={[styles.container, { backgroundColor: colors.background }]}>
+      <View style={[styles.header, { paddingTop: topPad + 8 }]}>
+        <Pressable onPress={() => router.back()} hitSlop={12} style={styles.backBtn}>
+          <Feather name="chevron-left" size={26} color={colors.foreground} />
+        </Pressable>
+        <Text style={[styles.title, { color: colors.foreground }]} numberOfLines={1}>
+          Dosya
+        </Text>
+        <View style={{ width: 26 }} />
+      </View>
+
+      {loading ? (
+        <View style={styles.center}>
+          <ActivityIndicator color={colors.primary} />
+        </View>
+      ) : error || !file ? (
+        <View style={styles.center}>
+          <Feather name="alert-circle" size={36} color="#dc2626" />
+          <Text style={[styles.errorText, { color: colors.foreground }]}>
+            {error ?? "Dosya bulunamadı."}
+          </Text>
+          <Pressable
+            onPress={() => router.back()}
+            style={[styles.primaryBtn, { backgroundColor: colors.primary, marginTop: 12 }]}
+          >
+            <Text style={styles.primaryBtnText}>Geri dön</Text>
+          </Pressable>
+        </View>
+      ) : (
+        <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 40 }}>
+          <View
+            style={[
+              styles.heroCard,
+              { backgroundColor: colors.card, borderColor: colors.border },
+            ]}
+          >
+            <View
+              style={[
+                styles.heroIcon,
+                { backgroundColor: colors.primary + "18" },
+              ]}
+            >
+              <Feather name="file-text" size={26} color={colors.primary} />
+            </View>
+            <Text
+              style={[styles.heroName, { color: colors.foreground }]}
+              numberOfLines={3}
+            >
+              {file.name}
+            </Text>
+            <Text style={[styles.heroSub, { color: colors.mutedForeground }]}>
+              {(file.extension ?? "").toUpperCase() || "DOSYA"} ·{" "}
+              {formatBytes(file.sizeBytes)}
+            </Text>
+          </View>
+
+          <InfoRow label="Tip (MIME)" value={file.mimeType} colors={colors} />
+          <InfoRow
+            label="Durum"
+            value={
+              file.status === "ready"
+                ? "Hazır"
+                : file.status === "processing"
+                  ? "İşleniyor"
+                  : file.status === "failed"
+                    ? "Hata"
+                    : file.status
+            }
+            colors={colors}
+          />
+          {file.chunkCount !== null && file.chunkCount > 0 ? (
+            <InfoRow
+              label="İçerik parça sayısı"
+              value={String(file.chunkCount)}
+              colors={colors}
+            />
+          ) : null}
+          <InfoRow
+            label="Yüklenme"
+            value={new Date(file.uploadedAt).toLocaleString("tr-TR")}
+            colors={colors}
+          />
+          <InfoRow
+            label="Son erişim"
+            value={new Date(file.lastAccessedAt).toLocaleString("tr-TR")}
+            colors={colors}
+          />
+
+          <View style={{ gap: 10, marginTop: 16 }}>
+            <Pressable
+              onPress={onOpen}
+              disabled={busy}
+              style={({ pressed }) => [
+                styles.primaryBtn,
+                {
+                  backgroundColor: colors.primary,
+                  opacity: busy ? 0.6 : pressed ? 0.85 : 1,
+                },
+              ]}
+            >
+              {busy ? (
+                <ActivityIndicator color="#fff" size="small" />
+              ) : (
+                <>
+                  <Feather name="external-link" size={15} color="#fff" />
+                  <Text style={styles.primaryBtnText}>Dosyayı aç / paylaş</Text>
+                </>
+              )}
+            </Pressable>
+            <Pressable
+              onPress={onAskAi}
+              style={({ pressed }) => [
+                styles.secondaryBtn,
+                { borderColor: colors.border, opacity: pressed ? 0.7 : 1 },
+              ]}
+            >
+              <Feather name="cpu" size={15} color={colors.foreground} />
+              <Text style={[styles.secondaryBtnText, { color: colors.foreground }]}>
+                AI'a sor
+              </Text>
+            </Pressable>
+            <Pressable
+              onPress={onDelete}
+              style={({ pressed }) => [
+                styles.secondaryBtn,
+                { borderColor: "#dc2626", opacity: pressed ? 0.7 : 1 },
+              ]}
+            >
+              <Feather name="trash-2" size={15} color="#dc2626" />
+              <Text style={[styles.secondaryBtnText, { color: "#dc2626" }]}>
+                Dosyayı sil
+              </Text>
+            </Pressable>
+          </View>
+        </ScrollView>
+      )}
+    </View>
+  );
+}
+
+function InfoRow({
+  label,
+  value,
+  colors,
+}: {
+  label: string;
+  value: string;
+  colors: ReturnType<typeof useColors>;
+}) {
+  return (
+    <View style={[styles.infoRow, { borderBottomColor: colors.border }]}>
+      <Text style={[styles.infoLabel, { color: colors.mutedForeground }]}>
+        {label}
+      </Text>
+      <Text
+        style={[styles.infoValue, { color: colors.foreground }]}
+        numberOfLines={3}
+      >
+        {value}
+      </Text>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: { flex: 1 },
+  header: {
+    paddingHorizontal: 16,
+    paddingBottom: 10,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  backBtn: { padding: 4 },
+  title: { fontSize: 18, fontFamily: "Inter_600SemiBold" },
+  center: { flex: 1, alignItems: "center", justifyContent: "center", padding: 24, gap: 10 },
+  errorText: { fontSize: 14, fontFamily: "Inter_500Medium", textAlign: "center" },
+  heroCard: {
+    padding: 20,
+    borderRadius: 16,
+    borderWidth: StyleSheet.hairlineWidth,
+    alignItems: "center",
+    marginBottom: 16,
+    gap: 10,
+  },
+  heroIcon: {
+    width: 60,
+    height: 60,
+    borderRadius: 16,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  heroName: { fontSize: 16, fontFamily: "Inter_600SemiBold", textAlign: "center" },
+  heroSub: { fontSize: 12, fontFamily: "Inter_500Medium" },
+  infoRow: {
+    paddingVertical: 12,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    flexDirection: "row",
+    justifyContent: "space-between",
+    gap: 12,
+  },
+  infoLabel: { fontSize: 12, fontFamily: "Inter_500Medium", flex: 0 },
+  infoValue: {
+    fontSize: 13,
+    fontFamily: "Inter_400Regular",
+    flex: 1,
+    textAlign: "right",
+  },
+  primaryBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    paddingVertical: 13,
+    borderRadius: 12,
+  },
+  primaryBtnText: { color: "#fff", fontFamily: "Inter_600SemiBold", fontSize: 14 },
+  secondaryBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    paddingVertical: 12,
+    borderRadius: 12,
+    borderWidth: StyleSheet.hairlineWidth,
+  },
+  secondaryBtnText: { fontFamily: "Inter_600SemiBold", fontSize: 14 },
+});
