@@ -1,4 +1,5 @@
 import { fetch } from "expo/fetch";
+import * as FileSystem from "expo-file-system/legacy";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { API_BASE_URL } from "./api";
 
@@ -36,38 +37,62 @@ export interface ListFilesResponse {
  * and the declared MIME type. Returns the server-side metadata,
  * including the deterministic per-user dedupe flag.
  */
+export interface UploadOptions {
+  /** Called with a 0..1 fraction as the multipart body is sent. */
+  onProgress?: (fraction: number) => void;
+}
+
 export async function uploadUserFile(
   uri: string,
   name: string,
   mimeType: string,
+  opts?: UploadOptions,
 ): Promise<UserFileDto> {
   const token = await getToken();
   if (!token) throw new Error("Oturum bulunamadı, tekrar giriş yapın.");
 
-  const form = new FormData();
-  // React Native's FormData accepts a `{ uri, name, type }` shape that
-  // tells the runtime to stream the local file body — no base64 conversion
-  // needed even for big PDFs.
-  form.append("file", {
+  // Use Expo's native upload task so we get real per-byte progress
+  // events. `expo/fetch` and the global FormData do not surface
+  // upload progress on React Native, so the chip would otherwise be
+  // stuck on an indeterminate spinner for big PDFs.
+  const task = FileSystem.createUploadTask(
+    `${API_BASE_URL}/files/upload`,
     uri,
-    name,
-    type: mimeType || "application/octet-stream",
-  } as unknown as Blob);
+    {
+      httpMethod: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+      uploadType: FileSystem.FileSystemUploadType.MULTIPART,
+      fieldName: "file",
+      mimeType: mimeType || "application/octet-stream",
+      parameters: { name },
+    },
+    (data) => {
+      const sent = data.totalBytesSent ?? 0;
+      const total = data.totalBytesExpectedToSend ?? 0;
+      if (total > 0 && opts?.onProgress) {
+        opts.onProgress(Math.min(1, sent / total));
+      }
+    },
+  );
 
-  const res = await fetch(`${API_BASE_URL}/files/upload`, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${token}` },
-    body: form as unknown as BodyInit,
-  });
-  if (!res.ok) {
-    let msg = `Yükleme hatası (${res.status})`;
+  const result = await task.uploadAsync();
+  if (!result) throw new Error("Yükleme başarısız oldu.");
+  if (result.status >= 400) {
+    let msg = `Yükleme hatası (${result.status})`;
     try {
-      const j = (await res.json()) as { error?: string };
+      const j = JSON.parse(result.body) as { error?: string };
       if (j?.error) msg = j.error;
     } catch {}
     throw new Error(msg);
   }
-  return (await res.json()) as UserFileDto;
+  // Mark 100% on success so the UI doesn't end at 99% if the OS
+  // batches the final progress event with the response.
+  opts?.onProgress?.(1);
+  try {
+    return JSON.parse(result.body) as UserFileDto;
+  } catch {
+    throw new Error("Sunucu yanıtı okunamadı.");
+  }
 }
 
 /**
@@ -124,6 +149,27 @@ export async function getFilePage(
 
 /** Maximum file size enforced client-side before kicking off an upload. */
 export const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
+
+export interface FilePagesResponse {
+  fileId: string;
+  pageCount: number;
+  pages: { pageNum: number }[];
+}
+
+/** List the pages available for a file (currently just count + numbers). */
+export async function listFilePages(fileId: string): Promise<FilePagesResponse> {
+  const token = await getToken();
+  if (!token) throw new Error("Oturum bulunamadı.");
+  const res = await fetch(
+    `${API_BASE_URL}/files/${encodeURIComponent(fileId)}/pages`,
+    { headers: { Authorization: `Bearer ${token}` } },
+  );
+  if (!res.ok) {
+    if (res.status === 404) return { fileId, pageCount: 0, pages: [] };
+    throw new Error(`Sayfalar alınamadı (${res.status})`);
+  }
+  return (await res.json()) as FilePagesResponse;
+}
 
 export async function listUserFiles(): Promise<ListFilesResponse> {
   const token = await getToken();
