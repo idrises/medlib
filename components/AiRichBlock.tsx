@@ -3,7 +3,13 @@ import { ActivityIndicator, AppState, Image as RNImage, Linking, Platform, Press
 import { Feather } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 
+import * as FileSystem from "expo-file-system/legacy";
+import * as Sharing from "expo-sharing";
+import AsyncStorage from "@react-native-async-storage/async-storage";
+
+import CitationChip from "@/components/CitationChip";
 import { useColors } from "@/hooks/useColors";
+import { API_BASE_URL } from "@/services/api";
 import { getPresentation } from "@/services/presentationApi";
 
 let ExpoImage: any = null;
@@ -46,6 +52,30 @@ export type RichBlock =
       slideCount: number;
       withImages: boolean;
       status?: "processing" | "ready" | "failed";
+    }
+  | {
+      type: "file_citation";
+      fileId: string;
+      fileName: string;
+      pageNum: number | null;
+    }
+  | {
+      // Generated file from code interpreter / agent tools. Renders as
+      // a download card so the user can fetch the artifact even if the
+      // model never explicitly mentioned it in prose.
+      type: "code_artifact";
+      fileId: string;
+      fileName: string;
+      mimeType?: string;
+      sizeBytes?: number;
+    }
+  | {
+      // Plain text output from a tool call (run_python stdout, etc.)
+      // surfaced as a monospace block so the user can see what the
+      // agent produced.
+      type: "code_output";
+      label?: string;
+      text: string;
     };
 
 const PALETTE = ["#3b82f6", "#10b981", "#f59e0b", "#ef4444", "#8b5cf6", "#ec4899", "#06b6d4", "#84cc16"];
@@ -62,8 +92,185 @@ export default function AiRichBlock({ block }: Props) {
   if (block.type === "diagram") return <DiagramBlock block={block} />;
   if (block.type === "card") return <CardBlock block={block} />;
   if (block.type === "presentation") return <PresentationBlock block={block} />;
+  if (block.type === "file_citation")
+    return (
+      <CitationChip
+        fileId={block.fileId}
+        fileName={block.fileName}
+        pageNum={block.pageNum}
+      />
+    );
+  if (block.type === "code_artifact") return <CodeArtifactBlock block={block} />;
+  if (block.type === "code_output") return <CodeOutputBlock block={block} />;
   return null;
 }
+
+function CodeArtifactBlock({
+  block,
+}: {
+  block: Extract<RichBlock, { type: "code_artifact" }>;
+}) {
+  const colors = useColors();
+  const [busy, setBusy] = useState(false);
+  const sizeLabel =
+    typeof block.sizeBytes === "number"
+      ? block.sizeBytes < 1024
+        ? `${block.sizeBytes} B`
+        : block.sizeBytes < 1024 * 1024
+          ? `${(block.sizeBytes / 1024).toFixed(0)} KB`
+          : `${(block.sizeBytes / 1024 / 1024).toFixed(1)} MB`
+      : null;
+
+  const onOpen = async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const token = await AsyncStorage.getItem("medlib_auth_token");
+      if (!token) throw new Error("Oturum bulunamadı.");
+      const safe = (block.fileName || "dosya").replace(
+        /[\\/:"<>|?*\x00-\x1f]/g,
+        "_",
+      );
+      const target = `${FileSystem.cacheDirectory}${block.fileId}-${safe}`;
+      const dl = await FileSystem.downloadAsync(
+        `${API_BASE_URL}/files/${block.fileId}/download`,
+        target,
+        { headers: { Authorization: `Bearer ${token}` } },
+      );
+      if (dl.status >= 400) throw new Error(`İndirme hatası (${dl.status})`);
+      if (Platform.OS === "web") {
+        if (typeof window !== "undefined") window.open(dl.uri, "_blank");
+      } else {
+        const can = await Sharing.isAvailableAsync();
+        if (can) await Sharing.shareAsync(dl.uri);
+      }
+    } catch (e) {
+      // Surface failure quietly — this is a passive download card
+      // that lives inside an assistant bubble; an Alert here would
+      // feel jarring. The user can retry by tapping again.
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Pressable
+      onPress={onOpen}
+      disabled={busy}
+      style={({ pressed }) => [
+        artStyles.card,
+        {
+          backgroundColor: colors.card,
+          borderColor: colors.border,
+          opacity: busy ? 0.6 : pressed ? 0.85 : 1,
+        },
+      ]}
+    >
+      <View
+        style={[
+          artStyles.icon,
+          { backgroundColor: colors.primary + "1A" },
+        ]}
+      >
+        <Feather
+          name={busy ? "download" : "file-plus"}
+          size={20}
+          color={colors.primary}
+        />
+      </View>
+      <View style={{ flex: 1, minWidth: 0 }}>
+        <Text style={[artStyles.label, { color: colors.mutedForeground }]}>
+          ÜRETİLEN DOSYA
+        </Text>
+        <Text
+          style={[artStyles.name, { color: colors.foreground }]}
+          numberOfLines={2}
+        >
+          {block.fileName}
+        </Text>
+        {sizeLabel ? (
+          <Text style={[artStyles.meta, { color: colors.mutedForeground }]}>
+            {sizeLabel}
+          </Text>
+        ) : null}
+      </View>
+      {busy ? (
+        <ActivityIndicator size="small" color={colors.mutedForeground} />
+      ) : (
+        <Feather name="download" size={16} color={colors.mutedForeground} />
+      )}
+    </Pressable>
+  );
+}
+
+function CodeOutputBlock({
+  block,
+}: {
+  block: Extract<RichBlock, { type: "code_output" }>;
+}) {
+  const colors = useColors();
+  return (
+    <View
+      style={[
+        artStyles.outputWrap,
+        { backgroundColor: colors.muted, borderColor: colors.border },
+      ]}
+    >
+      {block.label ? (
+        <Text style={[artStyles.outputLabel, { color: colors.mutedForeground }]}>
+          {block.label}
+        </Text>
+      ) : null}
+      <Text style={[artStyles.outputText, { color: colors.foreground }]}>
+        {block.text}
+      </Text>
+    </View>
+  );
+}
+
+const artStyles = StyleSheet.create({
+  card: {
+    marginTop: 8,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    padding: 12,
+    borderRadius: 12,
+    borderWidth: StyleSheet.hairlineWidth,
+  },
+  icon: {
+    width: 40,
+    height: 40,
+    borderRadius: 10,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  label: {
+    fontSize: 9,
+    fontFamily: "Inter_600SemiBold",
+    letterSpacing: 0.5,
+    marginBottom: 2,
+  },
+  name: { fontSize: 13, fontFamily: "Inter_600SemiBold", lineHeight: 17 },
+  meta: { fontSize: 11, fontFamily: "Inter_400Regular", marginTop: 2 },
+  outputWrap: {
+    marginTop: 8,
+    padding: 10,
+    borderRadius: 10,
+    borderWidth: StyleSheet.hairlineWidth,
+  },
+  outputLabel: {
+    fontSize: 10,
+    fontFamily: "Inter_600SemiBold",
+    letterSpacing: 0.5,
+    marginBottom: 6,
+  },
+  outputText: {
+    fontSize: 12,
+    fontFamily: Platform.OS === "ios" ? "Menlo" : "monospace",
+    lineHeight: 17,
+  },
+});
 
 function PresentationBlock({ block }: { block: Extract<RichBlock, { type: "presentation" }> }) {
   const colors = useColors();
