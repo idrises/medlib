@@ -1,5 +1,5 @@
 {
-  "name": "medlib",
+  "name": "@workspace/medlib",
   "version": "0.0.0",
   "private": true,
   "main": "expo-router/entry",
