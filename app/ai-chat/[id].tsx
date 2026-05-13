@@ -130,9 +130,12 @@ interface PendingAttachment {
 }
 
 export default function AiChatScreen() {
-  const { id, threadId: threadIdParam } = useLocalSearchParams<{
+  const { id, threadId: threadIdParam, prefill: prefillParam, fileId: prefillFileId, fileName: prefillFileName } = useLocalSearchParams<{
     id: string;
     threadId?: string;
+    prefill?: string;
+    fileId?: string;
+    fileName?: string;
   }>();
   const initialThreadId = (() => {
     if (typeof threadIdParam !== "string") return null;
@@ -182,6 +185,15 @@ export default function AiChatScreen() {
   const convIdRef = useRef<number | null>(convId);
 
   useEffect(() => { convIdRef.current = convId; }, [convId]);
+
+  const prefillAppliedRef = useRef(false);
+  useEffect(() => {
+    if (prefillAppliedRef.current) return;
+    if (typeof prefillParam === "string" && prefillParam.length > 0) {
+      prefillAppliedRef.current = true;
+      setInput(prefillParam);
+    }
+  }, [prefillParam]);
 
   useEffect(() => {
     if (!isNew && !initializedRef.current) {
@@ -685,10 +697,22 @@ export default function AiChatScreen() {
       // strip in the bubble already shows the user a friendly icon.
     }
     const userPdfNames = pendingAttachments.filter(a => a.type === "pdf").map(a => a.name ?? "document.pdf");
-    const userFiles = pendingAttachments.filter(a => a.type === "file" && a.fileId);
-    const fileHint = userFiles.length
-      ? `\n\n[Sistem notu — kullanıcı şu dosya(lar)ı yükledi, gerekirse search_user_files / get_file_page ile incele: ${userFiles
-          .map((a) => `${a.name ?? "dosya"} (file_id: ${a.fileId})`)
+    // Include any attachment that has a fileId — covers both explicit
+    // "file" uploads (no inline bytes) and PDFs whose base64 extraction
+    // failed but were still uploaded to /files/upload as a fallback.
+    const userFiles = pendingAttachments.filter(a => !!a.fileId && a.type !== "image");
+    // If we got here from "AI'a sor" on a file-detail screen, include the
+    // referenced file as a hint too so the first turn has the binding.
+    const prefillFileHint = prefillFileId
+      ? [{ fileId: String(prefillFileId), name: prefillFileName ? String(prefillFileName) : "dosya" }]
+      : [];
+    const allFileHints = [
+      ...userFiles.map((a) => ({ fileId: String(a.fileId), name: a.name ?? "dosya" })),
+      ...prefillFileHint.filter((p) => !userFiles.some((a) => a.fileId === p.fileId)),
+    ];
+    const fileHint = allFileHints.length
+      ? `\n\n[Sistem notu — kullanıcı şu dosya(lar)ı yükledi, gerekirse search_user_files / get_file_page ile incele: ${allFileHints
+          .map((a) => `${a.name} (file_id: ${a.fileId})`)
           .join(", ")}]`
       : "";
     const textForAi = text + fileHint;
@@ -701,7 +725,7 @@ export default function AiChatScreen() {
     setPendingAttachments([]);
 
     await performSend(textForAi, attachmentsForSend, userBlocks, displayContent);
-  }, [input, pendingAttachments, isStreaming, isProcessingVoice, performSend]);
+  }, [input, pendingAttachments, isStreaming, isProcessingVoice, performSend, prefillFileId, prefillFileName]);
 
   const handleRetry = useCallback((errorMsgId: string, payload: RetryPayload) => {
     if (isStreaming || isProcessingVoice) return;
