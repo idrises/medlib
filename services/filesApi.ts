@@ -70,6 +70,24 @@ export async function uploadUserFile(
   return (await res.json()) as UserFileDto;
 }
 
+/**
+ * Fetch a single file's metadata. Used by the detail screen and any
+ * citation/chip render path that needs more than just the (fileId,
+ * fileName) tuple already embedded in the rich_block.
+ */
+export async function getUserFile(fileId: string): Promise<UserFileDto> {
+  const token = await getToken();
+  if (!token) throw new Error("Oturum bulunamadı.");
+  const res = await fetch(`${API_BASE_URL}/files/${encodeURIComponent(fileId)}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) {
+    if (res.status === 404) throw new Error("Dosya bulunamadı.");
+    throw new Error(`Dosya alınamadı (${res.status})`);
+  }
+  return (await res.json()) as UserFileDto;
+}
+
 export async function listUserFiles(): Promise<ListFilesResponse> {
   const token = await getToken();
   if (!token) throw new Error("Oturum bulunamadı.");
