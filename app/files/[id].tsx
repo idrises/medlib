@@ -6,6 +6,8 @@ import React, { useCallback, useEffect, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
+  FlatList,
+  Image as RNImage,
   Platform,
   Pressable,
   ScrollView,
@@ -16,12 +18,15 @@ import {
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
+import PagePreviewModal from "@/components/PagePreviewModal";
 import { useColors } from "@/hooks/useColors";
 import { API_BASE_URL } from "@/services/api";
 import {
   UserFileDto,
   deleteUserFile,
+  getFilePage,
   getUserFile,
+  listFilePages,
 } from "@/services/filesApi";
 
 function formatBytes(n: number): string {
@@ -42,6 +47,8 @@ export default function FileDetailScreen() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [pageCount, setPageCount] = useState<number>(0);
+  const [previewPage, setPreviewPage] = useState<number | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -49,6 +56,14 @@ export default function FileDetailScreen() {
     try {
       const f = await getUserFile(fileId);
       setFile(f);
+      // Fetch page list separately — failure here shouldn't break the
+      // detail screen, just hide the gallery.
+      try {
+        const p = await listFilePages(fileId);
+        setPageCount(p.pageCount);
+      } catch {
+        setPageCount(0);
+      }
     } catch (e) {
       const msg = e instanceof Error ? e.message : "Dosya bulunamadı.";
       setError(msg);
@@ -216,6 +231,39 @@ export default function FileDetailScreen() {
             colors={colors}
           />
 
+          {pageCount > 0 ? (
+            <View style={{ marginTop: 18 }}>
+              <Text style={[styles.galleryTitle, { color: colors.foreground }]}>
+                Sayfalar ({pageCount})
+              </Text>
+              <Text
+                style={[styles.gallerySub, { color: colors.mutedForeground }]}
+              >
+                Önizlemek için bir sayfaya dokun.
+              </Text>
+              <FlatList
+                data={Array.from({ length: pageCount }, (_, i) => i + 1)}
+                keyExtractor={(n) => String(n)}
+                numColumns={3}
+                scrollEnabled={false}
+                columnWrapperStyle={{ gap: 8 }}
+                contentContainerStyle={{ gap: 8, marginTop: 10 }}
+                initialNumToRender={6}
+                maxToRenderPerBatch={6}
+                windowSize={3}
+                removeClippedSubviews
+                renderItem={({ item: n }) => (
+                  <PageThumb
+                    fileId={file.fileId}
+                    pageNum={n}
+                    onPress={() => setPreviewPage(n)}
+                    colors={colors}
+                  />
+                )}
+              />
+            </View>
+          ) : null}
+
           <View style={{ gap: 10, marginTop: 16 }}>
             <Pressable
               onPress={onOpen}
@@ -264,7 +312,67 @@ export default function FileDetailScreen() {
           </View>
         </ScrollView>
       )}
+      {file && previewPage !== null ? (
+        <PagePreviewModal
+          visible={previewPage !== null}
+          onClose={() => setPreviewPage(null)}
+          fileId={file.fileId}
+          fileName={file.name}
+          pageNum={previewPage}
+        />
+      ) : null}
     </View>
+  );
+}
+
+interface PageThumbProps {
+  fileId: string;
+  pageNum: number;
+  onPress: () => void;
+  colors: ReturnType<typeof useColors>;
+}
+
+function PageThumb({ fileId, pageNum, onPress, colors }: PageThumbProps) {
+  const [uri, setUri] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    getFilePage(fileId, pageNum)
+      .then((r) => {
+        if (!cancelled) setUri(r.imageDataUrl);
+      })
+      .catch(() => {
+        if (!cancelled) setFailed(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [fileId, pageNum]);
+
+  return (
+    <Pressable
+      onPress={onPress}
+      style={({ pressed }) => [
+        styles.thumb,
+        {
+          backgroundColor: colors.muted,
+          borderColor: colors.border,
+          opacity: pressed ? 0.7 : 1,
+        },
+      ]}
+    >
+      {uri ? (
+        <RNImage source={{ uri }} style={styles.thumbImage} resizeMode="cover" />
+      ) : failed ? (
+        <Feather name="alert-circle" size={18} color={colors.mutedForeground} />
+      ) : (
+        <ActivityIndicator size="small" color={colors.mutedForeground} />
+      )}
+      <View style={[styles.thumbLabel, { backgroundColor: "rgba(0,0,0,0.55)" }]}>
+        <Text style={styles.thumbLabelText}>{pageNum}</Text>
+      </View>
+    </Pressable>
   );
 }
 
@@ -355,4 +463,29 @@ const styles = StyleSheet.create({
     borderWidth: StyleSheet.hairlineWidth,
   },
   secondaryBtnText: { fontFamily: "Inter_600SemiBold", fontSize: 14 },
+  galleryTitle: { fontSize: 14, fontFamily: "Inter_600SemiBold" },
+  gallerySub: { fontSize: 12, fontFamily: "Inter_400Regular", marginTop: 2 },
+  thumb: {
+    flex: 1,
+    aspectRatio: 0.72,
+    borderRadius: 10,
+    borderWidth: StyleSheet.hairlineWidth,
+    overflow: "hidden",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  thumbImage: { width: "100%", height: "100%" },
+  thumbLabel: {
+    position: "absolute",
+    bottom: 4,
+    right: 4,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 6,
+  },
+  thumbLabelText: {
+    color: "#fff",
+    fontSize: 10,
+    fontFamily: "Inter_600SemiBold",
+  },
 });
