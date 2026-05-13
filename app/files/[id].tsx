@@ -96,6 +96,8 @@ export default function FileDetailScreen() {
       params: {
         id: "new",
         prefill: `📎 "${file.name}" dosyam hakkında bana yardım et.`,
+        fileId: file.fileId,
+        fileName: file.name,
       },
     } as never);
   };
