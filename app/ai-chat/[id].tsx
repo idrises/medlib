@@ -158,7 +158,7 @@ interface LocalMessage {
 
 interface PendingAttachment {
   id: string;
-  type: "image" | "pdf" | "file";
+  type: "image" | "file";
   data?: string;
   text?: string;
   name?: string;
@@ -370,20 +370,16 @@ export default function AiChatScreen() {
       const fallbackName = a.name ?? "dosya";
       const declaredMime: string =
         (a as { mimeType?: string }).mimeType ?? "application/octet-stream";
-      const isPdf =
-        declaredMime === "application/pdf" ||
-        fallbackName.toLowerCase().endsWith(".pdf");
 
-      // Optimistic chip while the multipart upload is in flight. PDFs
-      // continue to render as the legacy "pdf" chip so the existing
-      // chat-send path (which inlines base64) still works — Task #139
-      // will switch over to fileId-only. Non-PDF files use the new
-      // "file" chip and only live in storage for now.
+      // All picked files — PDFs included — go through the file-system
+      // upload and are referenced by fileId from here on. The agent
+      // reads them via search_user_files / get_file_page tools, so we
+      // never inline the file bytes into the chat payload.
       setPendingAttachments((prev) => [
         ...prev,
         {
           id: localId,
-          type: isPdf ? "pdf" : "file",
+          type: "file",
           name: fallbackName,
           mimeType: declaredMime,
           sizeBytes: typeof a.size === "number" ? a.size : undefined,
@@ -391,42 +387,16 @@ export default function AiChatScreen() {
         },
       ]);
 
-      // For PDFs, ALSO grab the base64 for the legacy chat backend so
-      // we don't regress PDF analysis while the new fileId path is
-      // being wired up. Run in parallel with the storage upload.
-      const base64Promise: Promise<string | undefined> = isPdf
-        ? (async () => {
-            try {
-              const resp = await fetch(a.uri);
-              const blob = await resp.blob();
-              return await new Promise<string>((resolve, reject) => {
-                const reader = new FileReader();
-                reader.onloadend = () => {
-                  const r = String(reader.result ?? "");
-                  resolve(r.includes(",") ? r.split(",")[1] : r);
-                };
-                reader.onerror = reject;
-                reader.readAsDataURL(blob);
-              });
-            } catch {
-              return undefined;
-            }
-          })()
-        : Promise.resolve(undefined);
-
       try {
-        const [uploaded, base64] = await Promise.all([
-          uploadUserFile(a.uri, fallbackName, declaredMime, {
-            onProgress: (frac) => {
-              setPendingAttachments((prev) =>
-                prev.map((p) =>
-                  p.id === localId ? { ...p, uploadProgress: frac } : p,
-                ),
-              );
-            },
-          }),
-          base64Promise,
-        ]);
+        const uploaded = await uploadUserFile(a.uri, fallbackName, declaredMime, {
+          onProgress: (frac) => {
+            setPendingAttachments((prev) =>
+              prev.map((p) =>
+                p.id === localId ? { ...p, uploadProgress: frac } : p,
+              ),
+            );
+          },
+        });
         // Fire-and-forget page count hydration — needed so the
         // user_file rich card shows "N sayfa" the moment the user
         // hits send. Failure is non-fatal; the card just omits the
@@ -450,7 +420,6 @@ export default function AiChatScreen() {
                   name: uploaded.name,
                   mimeType: uploaded.mimeType,
                   sizeBytes: uploaded.sizeBytes,
-                  data: base64,
                 }
               : p,
           ),
@@ -769,22 +738,6 @@ export default function AiChatScreen() {
       if (a.type === "image" && a.data) {
         attachmentsForSend.push({ type: "image", data: a.data });
         userBlocks.push({ type: "image", url: `data:image/jpeg;base64,${a.data}`, alt: "Yüklenen görsel" });
-      } else if (a.type === "pdf") {
-        // PDFs use the legacy inline path so the model still sees the
-        // text content directly. They ALSO get a structured `file`
-        // attachment when uploaded so the agent can call get_file_page
-        // for paginated reads later.
-        attachmentsForSend.push({ type: "pdf", data: a.data, text: a.text, name: a.name });
-        if (a.fileId && !fileAttachmentsSeen.has(a.fileId)) {
-          attachmentsForSend.push({
-            type: "file",
-            fileId: a.fileId,
-            name: a.name,
-            mimeType: a.mimeType,
-            sizeBytes: a.sizeBytes,
-          });
-          fileAttachmentsSeen.add(a.fileId);
-        }
       } else if (a.type === "file" && a.fileId) {
         attachmentsForSend.push({
           type: "file",
@@ -1452,11 +1405,7 @@ export default function AiChatScreen() {
             <View style={styles.attachStrip}>
               {pendingAttachments.map(a => {
                 const label =
-                  a.type === "image"
-                    ? "Görsel"
-                    : a.type === "pdf"
-                      ? (a.name ?? "PDF")
-                      : (a.name ?? "Dosya");
+                  a.type === "image" ? "Görsel" : (a.name ?? "Dosya");
                 const pct = Math.round((a.uploadProgress ?? 0) * 100);
                 return (
                   <Pressable key={a.id} style={styles.attachChip} onPress={() => removeAttachment(a.id)}>
