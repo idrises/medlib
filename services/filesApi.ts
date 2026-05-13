@@ -88,6 +88,43 @@ export async function getUserFile(fileId: string): Promise<UserFileDto> {
   return (await res.json()) as UserFileDto;
 }
 
+export interface FilePagePreview {
+  fileId: string;
+  fileName: string;
+  pageNum: number;
+  imageDataUrl: string;
+  pageText: string;
+}
+
+/**
+ * Fetch a single rendered page (PNG data URL + text excerpt) for the
+ * citation preview modal. Mirrors the server-side agent tool but is
+ * exposed over HTTP so the mobile UI can display the cited page.
+ */
+export async function getFilePage(
+  fileId: string,
+  pageNum: number,
+): Promise<FilePagePreview> {
+  const token = await getToken();
+  if (!token) throw new Error("Oturum bulunamadı.");
+  const res = await fetch(
+    `${API_BASE_URL}/files/${encodeURIComponent(fileId)}/page/${pageNum}`,
+    { headers: { Authorization: `Bearer ${token}` } },
+  );
+  if (!res.ok) {
+    let msg = `Sayfa alınamadı (${res.status})`;
+    try {
+      const j = (await res.json()) as { error?: string };
+      if (j?.error) msg = j.error;
+    } catch {}
+    throw new Error(msg);
+  }
+  return (await res.json()) as FilePagePreview;
+}
+
+/** Maximum file size enforced client-side before kicking off an upload. */
+export const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
+
 export async function listUserFiles(): Promise<ListFilesResponse> {
   const token = await getToken();
   if (!token) throw new Error("Oturum bulunamadı.");
