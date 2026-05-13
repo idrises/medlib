@@ -117,7 +117,8 @@ export async function deleteAiFeedback(messageId: number): Promise<void> {
 
 export type AiAttachment =
   | { type: "image"; data: string }
-  | { type: "pdf"; text?: string; data?: string; name?: string };
+  | { type: "pdf"; text?: string; data?: string; name?: string }
+  | { type: "file"; fileId: string; name?: string; mimeType?: string; sizeBytes?: number };
 
 const BLOCK_OPEN = "<<<MEDLIB_BLOCK>>>";
 const BLOCK_CLOSE = "<<<END>>>";
