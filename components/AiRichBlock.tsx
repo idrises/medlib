@@ -189,7 +189,74 @@ function UserFileBlock({
   );
 }
 
+function isImageArtifact(
+  block: Extract<RichBlock, { type: "code_artifact" }>,
+): boolean {
+  const mt = (block.mimeType ?? "").toLowerCase();
+  if (mt.startsWith("image/")) return true;
+  return /\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(block.fileName ?? "");
+}
+
+function InlineCodeImageBlock({
+  block,
+}: {
+  block: Extract<RichBlock, { type: "code_artifact" }>;
+}) {
+  const colors = useColors();
+  const router = useRouter();
+  const [token, setToken] = useState<string | null>(null);
+  useEffect(() => {
+    AsyncStorage.getItem("medlib_auth_token")
+      .then(setToken)
+      .catch(() => setToken(null));
+  }, []);
+  const url = `${API_BASE_URL}/files/${block.fileId}/download`;
+  const Img: any = ExpoImage ?? RNImage;
+  return (
+    <Pressable
+      onPress={() =>
+        router.push({
+          pathname: "/files/[id]",
+          params: { id: block.fileId },
+        } as never)
+      }
+      style={({ pressed }) => [
+        artStyles.inlineImageWrap,
+        { borderColor: colors.border, opacity: pressed ? 0.85 : 1 },
+      ]}
+    >
+      {token ? (
+        <Img
+          source={{ uri: url, headers: { Authorization: `Bearer ${token}` } }}
+          style={artStyles.inlineImage}
+          contentFit="cover"
+          resizeMode="cover"
+        />
+      ) : (
+        <View style={[artStyles.inlineImage, { alignItems: "center", justifyContent: "center" }]}>
+          <ActivityIndicator size="small" color={colors.mutedForeground} />
+        </View>
+      )}
+      <View style={artStyles.inlineImageCaption}>
+        <Feather name="image" size={11} color="#fff" />
+        <Text style={artStyles.inlineImageCaptionText} numberOfLines={1}>
+          {block.fileName}
+        </Text>
+      </View>
+    </Pressable>
+  );
+}
+
 function CodeArtifactBlock({
+  block,
+}: {
+  block: Extract<RichBlock, { type: "code_artifact" }>;
+}) {
+  if (isImageArtifact(block)) return <InlineCodeImageBlock block={block} />;
+  return <CodeArtifactDownloadBlock block={block} />;
+}
+
+function CodeArtifactDownloadBlock({
   block,
 }: {
   block: Extract<RichBlock, { type: "code_artifact" }>;
@@ -354,6 +421,35 @@ const artStyles = StyleSheet.create({
     fontSize: 12,
     fontFamily: Platform.OS === "ios" ? "Menlo" : "monospace",
     lineHeight: 17,
+  },
+  inlineImageWrap: {
+    marginTop: 8,
+    borderRadius: 12,
+    borderWidth: StyleSheet.hairlineWidth,
+    overflow: "hidden",
+    backgroundColor: "#0001",
+  },
+  inlineImage: {
+    width: "100%",
+    aspectRatio: 4 / 3,
+  },
+  inlineImageCaption: {
+    position: "absolute",
+    bottom: 0,
+    left: 0,
+    right: 0,
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+    backgroundColor: "rgba(0,0,0,0.55)",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
+  inlineImageCaptionText: {
+    color: "#fff",
+    fontSize: 11,
+    fontFamily: "Inter_500Medium",
+    flex: 1,
   },
 });
 
