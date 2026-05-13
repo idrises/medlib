@@ -93,6 +93,8 @@ function RootLayoutNav() {
         <Stack.Screen name="ai-chat/index" options={{ headerShown: false }} />
         <Stack.Screen name="ai-chat/[id]" options={{ headerShown: false }} />
         <Stack.Screen name="ai-realtime" options={{ headerShown: false }} />
+        <Stack.Screen name="files/index" options={{ headerShown: false }} />
+        <Stack.Screen name="files/[id]" options={{ headerShown: false }} />
       </Stack>
       {showFab && <FloatingAIButton />}
     </View>
