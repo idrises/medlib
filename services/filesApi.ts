@@ -1,5 +1,5 @@
 import { fetch } from "expo/fetch";
-import * as FileSystem from "expo-file-system/legacy";
+import { Platform } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { API_BASE_URL } from "./api";
 
@@ -53,48 +53,66 @@ export async function uploadUserFile(
   const token = await getToken();
   if (!token) throw new Error("Oturum bulunamadı, tekrar giriş yapın.");
 
-  // Use Expo's native upload task so we get real per-byte progress
-  // events. `expo/fetch` and the global FormData do not surface
-  // upload progress on React Native, so the chip would otherwise be
-  // stuck on an indeterminate spinner for big PDFs.
-  const task = FileSystem.createUploadTask(
-    `${API_BASE_URL}/files/upload`,
-    uri,
-    {
-      httpMethod: "POST",
-      headers: { Authorization: `Bearer ${token}` },
-      uploadType: FileSystem.FileSystemUploadType.MULTIPART,
-      fieldName: "file",
-      mimeType: mimeType || "application/octet-stream",
-      parameters: { name },
-    },
-    (data) => {
-      const sent = data.totalBytesSent ?? 0;
-      const total = data.totalBytesExpectedToSend ?? 0;
-      if (total > 0 && opts?.onProgress) {
-        opts.onProgress(Math.min(1, sent / total));
-      }
-    },
-  );
+  // We use plain XMLHttpRequest with FormData here instead of
+  // expo-file-system's createUploadTask. The legacy upload task
+  // started throwing "Unsupported FormDataPart implementation" on
+  // some iOS builds with newer Expo SDKs (notably for PDFs), and the
+  // XHR path is the canonical React Native upload pattern: it
+  // supports per-byte upload progress on both iOS and Android, and
+  // works on web by appending a Blob fetched from the picker URI.
+  const url = `${API_BASE_URL}/files/upload`;
+  const fd = new FormData();
+  fd.append("name", name);
+  if (Platform.OS === "web") {
+    // Web: turn the picker URI into a Blob so the browser FormData
+    // can serialize it. Using a string URI here would just send the
+    // URL text as the file part.
+    const blob = await (await globalThis.fetch(uri)).blob();
+    fd.append("file", blob, name);
+  } else {
+    // Native (iOS/Android): React Native's FormData accepts the
+    // { uri, name, type } object shape directly and streams the
+    // file from disk without copying it into JS memory.
+    fd.append(
+      "file",
+      { uri, name, type: mimeType || "application/octet-stream" } as never,
+    );
+  }
 
-  const result = await task.uploadAsync();
-  if (!result) throw new Error("Yükleme başarısız oldu.");
-  if (result.status >= 400) {
-    let msg = `Yükleme hatası (${result.status})`;
-    try {
-      const j = JSON.parse(result.body) as { error?: string };
-      if (j?.error) msg = j.error;
-    } catch {}
-    throw new Error(msg);
-  }
-  // Mark 100% on success so the UI doesn't end at 99% if the OS
-  // batches the final progress event with the response.
-  opts?.onProgress?.(1);
-  try {
-    return JSON.parse(result.body) as UserFileDto;
-  } catch {
-    throw new Error("Sunucu yanıtı okunamadı.");
-  }
+  return await new Promise<UserFileDto>((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", url);
+    xhr.setRequestHeader("Authorization", `Bearer ${token}`);
+    if (xhr.upload && opts?.onProgress) {
+      xhr.upload.onprogress = (e: ProgressEvent) => {
+        if (e.lengthComputable && e.total > 0) {
+          opts.onProgress?.(Math.min(1, e.loaded / e.total));
+        }
+      };
+    }
+    xhr.onload = () => {
+      if (xhr.status >= 400) {
+        let msg = `Yükleme hatası (${xhr.status})`;
+        try {
+          const j = JSON.parse(xhr.responseText) as { error?: string };
+          if (j?.error) msg = j.error;
+        } catch {}
+        reject(new Error(msg));
+        return;
+      }
+      // Snap to 100% on success so the UI doesn't freeze at 99% if
+      // the OS coalesces the final progress event with the response.
+      opts?.onProgress?.(1);
+      try {
+        resolve(JSON.parse(xhr.responseText) as UserFileDto);
+      } catch {
+        reject(new Error("Sunucu yanıtı okunamadı."));
+      }
+    };
+    xhr.onerror = () => reject(new Error("Yükleme başarısız oldu."));
+    xhr.ontimeout = () => reject(new Error("Yükleme zaman aşımına uğradı."));
+    xhr.send(fd);
+  });
 }
 
 /**
