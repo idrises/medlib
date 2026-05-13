@@ -8,6 +8,7 @@ import * as Sharing from "expo-sharing";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
 import CitationChip from "@/components/CitationChip";
+import ImageActionsSheet from "@/components/ImageActionsSheet";
 import { useColors } from "@/hooks/useColors";
 import { API_BASE_URL } from "@/services/api";
 import { getPresentation } from "@/services/presentationApi";
@@ -205,6 +206,7 @@ function InlineCodeImageBlock({
   const colors = useColors();
   const router = useRouter();
   const [token, setToken] = useState<string | null>(null);
+  const [sheetOpen, setSheetOpen] = useState(false);
   useEffect(() => {
     AsyncStorage.getItem("medlib_auth_token")
       .then(setToken)
@@ -220,6 +222,8 @@ function InlineCodeImageBlock({
           params: { id: block.fileId },
         } as never)
       }
+      onLongPress={() => setSheetOpen(true)}
+      delayLongPress={350}
       style={({ pressed }) => [
         artStyles.inlineImageWrap,
         { borderColor: colors.border, opacity: pressed ? 0.85 : 1 },
@@ -243,6 +247,13 @@ function InlineCodeImageBlock({
           {block.fileName}
         </Text>
       </View>
+      <ImageActionsSheet
+        visible={sheetOpen}
+        onClose={() => setSheetOpen(false)}
+        imageUrl={url}
+        authToken={token}
+        fileName={block.fileName}
+      />
     </Pressable>
   );
 }
@@ -559,26 +570,35 @@ function PresentationBlock({ block }: { block: Extract<RichBlock, { type: "prese
 }
 
 function ImageBlock({ block }: { block: Extract<RichBlock, { type: "image" }> }) {
+  const [sheetOpen, setSheetOpen] = useState(false);
   const url = String(block.url ?? "");
   const safe = url.startsWith("data:image/") || url.startsWith("https://") || url.startsWith("http://");
   if (!safe) return null;
-  if (ExpoImage) {
-    return (
-      <View style={styles.imageWrap}>
-        <ExpoImage
-          source={{ uri: url }}
-          style={styles.image}
-          contentFit="cover"
-          transition={200}
-          accessibilityLabel={block.alt}
-        />
-      </View>
-    );
-  }
+  const inner = ExpoImage ? (
+    <ExpoImage
+      source={{ uri: url }}
+      style={styles.image}
+      contentFit="cover"
+      transition={200}
+      accessibilityLabel={block.alt}
+    />
+  ) : (
+    <RNImage source={{ uri: url }} style={styles.image} resizeMode="cover" accessibilityLabel={block.alt} />
+  );
   return (
-    <View style={styles.imageWrap}>
-      <RNImage source={{ uri: url }} style={styles.image} resizeMode="cover" accessibilityLabel={block.alt} />
-    </View>
+    <Pressable
+      onLongPress={() => setSheetOpen(true)}
+      delayLongPress={350}
+      style={({ pressed }) => [styles.imageWrap, { opacity: pressed ? 0.9 : 1 }]}
+    >
+      {inner}
+      <ImageActionsSheet
+        visible={sheetOpen}
+        onClose={() => setSheetOpen(false)}
+        imageUrl={url}
+        fileName={block.alt}
+      />
+    </Pressable>
   );
 }
 
