@@ -659,14 +659,24 @@ export default function AdminPanelScreen() {
                   <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: colors.mutedForeground }}>Kullanıcı ID: {user.id}</Text>
                 </View>
                 {user.phone ? (
-                  <Pressable
-                    onPress={() => Linking.openURL(`https://wa.me/${user.phone!.replace(/\D/g, "")}`)}
-                    style={{ flexDirection: "row", gap: 8, alignItems: "center", marginTop: 10, padding: 10, borderRadius: 8, backgroundColor: "#25D36615", borderWidth: 1, borderColor: "#25D36640" }}
-                  >
-                    <Feather name="phone" size={16} color="#25D366" />
-                    <Text style={{ flex: 1, fontSize: 14, fontFamily: "Inter_600SemiBold", color: "#25D366" }}>{user.phone}</Text>
-                    <Text style={{ fontSize: 11, fontFamily: "Inter_500Medium", color: "#25D366" }}>WhatsApp</Text>
-                  </Pressable>
+                  <View style={{ flexDirection: "row", gap: 8, alignItems: "center", marginTop: 10 }}>
+                    <Feather name="phone" size={13} color={colors.mutedForeground} />
+                    <Text style={{ flex: 1, fontSize: 14, fontFamily: "Inter_500Medium", color: colors.foreground }}>{user.phone}</Text>
+                    <Pressable
+                      onPress={() => Linking.openURL(`tel:${user.phone!.replace(/\s/g, "")}`)}
+                      style={{ flexDirection: "row", alignItems: "center", gap: 4, paddingHorizontal: 10, paddingVertical: 6, borderRadius: 14, backgroundColor: colors.primary + "1A" }}
+                    >
+                      <Feather name="phone" size={12} color={colors.primary} />
+                      <Text style={{ fontSize: 12, fontFamily: "Inter_500Medium", color: colors.primary }}>Ara</Text>
+                    </Pressable>
+                    <Pressable
+                      onPress={() => Linking.openURL(`https://wa.me/${user.phone!.replace(/\D/g, "")}`)}
+                      style={{ flexDirection: "row", alignItems: "center", gap: 4, paddingHorizontal: 10, paddingVertical: 6, borderRadius: 14, backgroundColor: "#25D36622" }}
+                    >
+                      <Feather name="message-circle" size={12} color="#25D366" />
+                      <Text style={{ fontSize: 12, fontFamily: "Inter_500Medium", color: "#25D366" }}>WhatsApp</Text>
+                    </Pressable>
+                  </View>
                 ) : null}
               </View>
 
@@ -1263,16 +1273,25 @@ export default function AdminPanelScreen() {
                       </Text>
                     ) : null}
                     {item.phone ? (
-                      <Pressable
-                        onPress={(e) => { e.stopPropagation?.(); Linking.openURL(`https://wa.me/${item.phone!.replace(/\D/g, "")}`); }}
-                        hitSlop={6}
-                        style={{ flexDirection: "row", alignItems: "center", gap: 4, marginTop: 2 }}
-                      >
-                        <Feather name="phone" size={11} color="#25D366" />
-                        <Text style={{ fontSize: 11, fontFamily: "Inter_500Medium", color: "#25D366" }}>
+                      <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginTop: 2 }}>
+                        <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: colors.foreground }}>
                           {item.phone}
                         </Text>
-                      </Pressable>
+                        <Pressable
+                          onPress={(e) => { e.stopPropagation?.(); Linking.openURL(`tel:${item.phone!.replace(/\s/g, "")}`); }}
+                          hitSlop={8}
+                          style={{ width: 22, height: 22, borderRadius: 11, backgroundColor: colors.primary + "1A", alignItems: "center", justifyContent: "center" }}
+                        >
+                          <Feather name="phone" size={12} color={colors.primary} />
+                        </Pressable>
+                        <Pressable
+                          onPress={(e) => { e.stopPropagation?.(); Linking.openURL(`https://wa.me/${item.phone!.replace(/\D/g, "")}`); }}
+                          hitSlop={8}
+                          style={{ width: 22, height: 22, borderRadius: 11, backgroundColor: "#25D36622", alignItems: "center", justifyContent: "center" }}
+                        >
+                          <Feather name="message-circle" size={12} color="#25D366" />
+                        </Pressable>
+                      </View>
                     ) : null}
                   </View>
                   <Feather name="chevron-right" size={16} color={colors.mutedForeground} />
