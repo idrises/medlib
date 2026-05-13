@@ -48,7 +48,7 @@ import {
   stopCurrentPlayback,
   onSilenceDetected,
 } from "@/services/voiceApi";
-import { MAX_UPLOAD_BYTES, uploadUserFile } from "@/services/filesApi";
+import { MAX_UPLOAD_BYTES, listFilePages, uploadUserFile } from "@/services/filesApi";
 import AiRichBlock, { type RichBlock } from "@/components/AiRichBlock";
 import MarkdownText from "@/components/MarkdownText";
 import MessageActionBar from "@/components/MessageActionBar";
@@ -172,6 +172,8 @@ interface PendingAttachment {
   uploading?: boolean;
   /** 0..1 — populated while a multipart upload is in flight. */
   uploadProgress?: number;
+  /** Populated after server-side ingestion finishes (PDF page count). */
+  pageCount?: number;
 }
 
 export default function AiChatScreen() {
@@ -228,6 +230,9 @@ export default function AiChatScreen() {
   const initializedRef = useRef(false);
   const voiceActiveRef = useRef(false);
   const convIdRef = useRef<number | null>(convId);
+  // Tracks whether the deep-link prefill file has already been attached
+  // to one outgoing message — keeps subsequent unrelated turns clean.
+  const prefillAttachedRef = useRef<boolean>(false);
 
   useEffect(() => { convIdRef.current = convId; }, [convId]);
 
@@ -422,6 +427,19 @@ export default function AiChatScreen() {
           }),
           base64Promise,
         ]);
+        // Fire-and-forget page count hydration — needed so the
+        // user_file rich card shows "N sayfa" the moment the user
+        // hits send. Failure is non-fatal; the card just omits the
+        // page count line.
+        listFilePages(uploaded.fileId)
+          .then((p) => {
+            setPendingAttachments((prev) =>
+              prev.map((q) =>
+                q.id === localId ? { ...q, pageCount: p.pageCount } : q,
+              ),
+            );
+          })
+          .catch(() => {});
         setPendingAttachments((prev) =>
           prev.map((p) =>
             p.id === localId
@@ -782,7 +800,8 @@ export default function AiChatScreen() {
     // Surface any uploaded file as a rich `user_file` card in the user's
     // own bubble so the chat history is readable at a glance (rather
     // than a bare 📎 emoji line). The card also doubles as a quick
-    // shortcut to the file detail screen.
+    // shortcut to the file detail screen. pageCount is hydrated by the
+    // post-upload listFilePages() call so the card shows "N sayfa".
     for (const a of pendingAttachments) {
       if (!a.fileId || a.type === "image") continue;
       userBlocks.push({
@@ -791,14 +810,20 @@ export default function AiChatScreen() {
         fileName: a.name ?? "dosya",
         mimeType: a.mimeType,
         sizeBytes: a.sizeBytes,
+        pageCount: a.pageCount,
       });
     }
 
     // If we got here from "AI'a sor" on a file-detail screen and the
     // user didn't explicitly attach the file in this turn, attach it
-    // implicitly so the first turn has the binding without a free-text
-    // hint. The server will hydrate name/mime/size/pageCount.
-    if (prefillFileId && !fileAttachmentsSeen.has(String(prefillFileId))) {
+    // ONCE so the first turn has the binding without a free-text hint.
+    // A ref guard prevents the prefill from being re-attached on every
+    // subsequent send in the same screen instance.
+    if (
+      prefillFileId &&
+      !prefillAttachedRef.current &&
+      !fileAttachmentsSeen.has(String(prefillFileId))
+    ) {
       const pid = String(prefillFileId);
       attachmentsForSend.push({
         type: "file",
@@ -811,6 +836,7 @@ export default function AiChatScreen() {
         fileName: prefillFileName ? String(prefillFileName) : "dosya",
       });
       fileAttachmentsSeen.add(pid);
+      prefillAttachedRef.current = true;
     }
 
     // No more `[Sistem notu — file_id: ...]` text hint — the structured
