@@ -11,6 +11,8 @@ export type DeviceStats = {
   expiringSoon: number;
   expired: number;
   devices: { iphone: number; ipad: number; mac: number };
+  totalUsers?: number;
+  activeUsers?: number;
 };
 
 export type StatusFilter = "active" | "expiringSoon" | "expired";
