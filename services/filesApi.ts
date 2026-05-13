@@ -21,6 +21,8 @@ export interface UserFileDto {
   sha256: string;
   status: string;
   chunkCount: number | null;
+  /** Sayfa sayısı — PDF/DOCX/PPTX gibi sayfalı dosyalarda dolar; ingestion bitince ayarlanır. */
+  pageCount: number | null;
   uploadedAt: string;
   lastAccessedAt: string;
   deduped?: boolean;
