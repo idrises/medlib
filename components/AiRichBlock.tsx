@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
-import { ActivityIndicator, AppState, Image as RNImage, Linking, Platform, Pressable, StyleSheet, Text, View } from "react-native";
+import { ActivityIndicator, Alert, AppState, Image as RNImage, Linking, Platform, Pressable, StyleSheet, Text, View } from "react-native";
 import { Feather } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 
@@ -145,9 +145,10 @@ function CodeArtifactBlock({
         if (can) await Sharing.shareAsync(dl.uri);
       }
     } catch (e) {
-      // Surface failure quietly — this is a passive download card
-      // that lives inside an assistant bubble; an Alert here would
-      // feel jarring. The user can retry by tapping again.
+      Alert.alert(
+        "Dosya açılamadı",
+        e instanceof Error ? e.message : "Bağlantı hatası. Tekrar deneyin.",
+      );
     } finally {
       setBusy(false);
     }
