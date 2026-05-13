@@ -105,7 +105,7 @@ export default function ProfileScreen() {
   const {
     likedItems, bookmarkedItems,
     downloadedVideos, videoProgresses, removeDownload,
-    activities,
+    activities, activitiesTotal,
   } = useApp();
   const { setSource } = useSourceList();
 
@@ -374,7 +374,7 @@ export default function ProfileScreen() {
             const usersLabel = isAdmin && isUsersTab && deviceStats
               ? `${deviceStats.activeUsers ?? deviceStats.active}/${deviceStats.totalUsers ?? deviceStats.total}`
               : null;
-            const num = tab === "Viewed" ? activities.length
+            const num = tab === "Viewed" ? (activitiesTotal || activities.length)
               : tab === "Liked" ? likedItems.length
               : tab === "Saved" ? bookmarkedItems.length
               : tab === "Downloads" ? downloadedVideos.length
