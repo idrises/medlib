@@ -5,6 +5,7 @@ import {
   ActivityIndicator,
   Dimensions,
   FlatList,
+  Linking,
   Platform,
   Pressable,
   ScrollView,
@@ -29,6 +30,7 @@ type AdminUserRow = {
   id: number;
   email: string;
   name: string;
+  phone: string | null;
   expireDate: string | null;
   activate: number | null;
   subject: string | null;
@@ -602,6 +604,16 @@ export default function ProfileScreen() {
               <View style={{ backgroundColor: colors.card, borderColor: colors.border, borderWidth: 1, borderRadius: 12, padding: 14 }}>
                 <Text style={{ fontFamily: "Inter_700Bold", color: colors.foreground, fontSize: 16 }}>{selectedUser.name || selectedUser.email}</Text>
                 <Text style={{ fontFamily: "Inter_400Regular", color: colors.mutedForeground, fontSize: 12, marginTop: 2 }}>{selectedUser.email}</Text>
+                {selectedUser.phone ? (
+                  <Pressable
+                    onPress={() => Linking.openURL(`https://wa.me/${selectedUser.phone!.replace(/\D/g, "")}`)}
+                    style={{ flexDirection: "row", gap: 8, alignItems: "center", marginTop: 10, padding: 10, borderRadius: 8, backgroundColor: "#25D36615", borderWidth: 1, borderColor: "#25D36640" }}
+                  >
+                    <Feather name="phone" size={16} color="#25D366" />
+                    <Text style={{ flex: 1, fontSize: 14, fontFamily: "Inter_600SemiBold", color: "#25D366" }}>{selectedUser.phone}</Text>
+                    <Text style={{ fontSize: 11, fontFamily: "Inter_500Medium", color: "#25D366" }}>WhatsApp</Text>
+                  </Pressable>
+                ) : null}
               </View>
               {selectedLoading ? (
                 <View style={{ paddingVertical: 30, alignItems: "center" }}>
@@ -740,6 +752,18 @@ export default function ProfileScreen() {
                         <Text style={[styles.itemMeta, { marginTop: 1 }]} numberOfLines={1}>
                           {deviceText} · {item.expireDate ? `Üyelik: ${item.expireDate}` : "Üyelik: —"}
                         </Text>
+                        {item.phone ? (
+                          <Pressable
+                            onPress={(e) => { e.stopPropagation?.(); Linking.openURL(`https://wa.me/${item.phone!.replace(/\D/g, "")}`); }}
+                            hitSlop={6}
+                            style={{ flexDirection: "row", alignItems: "center", gap: 4, marginTop: 2 }}
+                          >
+                            <Feather name="phone" size={11} color="#25D366" />
+                            <Text style={{ fontSize: 11, fontFamily: "Inter_500Medium", color: "#25D366" }}>
+                              {item.phone}
+                            </Text>
+                          </Pressable>
+                        ) : null}
                       </View>
                       <Feather name="chevron-right" size={18} color={colors.mutedForeground} />
                     </Pressable>
