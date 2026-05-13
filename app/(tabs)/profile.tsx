@@ -370,18 +370,28 @@ export default function ProfileScreen() {
 
         <View style={styles.statsRow}>
           {tabs.map((tab, idx) => {
+            const isUsersTab = tab === "Kullanıcılar";
+            const usersLabel = isAdmin && isUsersTab && deviceStats
+              ? `${deviceStats.activeUsers ?? deviceStats.active}/${deviceStats.totalUsers ?? deviceStats.total}`
+              : null;
             const num = tab === "Viewed" ? activities.length
               : tab === "Liked" ? likedItems.length
               : tab === "Saved" ? bookmarkedItems.length
               : tab === "Downloads" ? downloadedVideos.length
-              : tab === "Kullanıcılar" ? (isAdmin ? (deviceStats?.total ?? adminUsers.length) : 0)
+              : isUsersTab ? (isAdmin ? (deviceStats?.totalUsers ?? deviceStats?.total ?? adminUsers.length) : 0)
               : activities.length;
             const isActive = activeTab === tab;
             return (
               <React.Fragment key={tab}>
                 {idx > 0 && <View style={styles.statDivider} />}
                 <Pressable style={[styles.statItem, isActive && styles.statItemActive]} onPress={() => setActiveTab(tab)}>
-                  <Text style={[styles.statNum, isActive && styles.statNumActive]}>{num}</Text>
+                  <Text
+                    style={[styles.statNum, isActive && styles.statNumActive, usersLabel ? { fontSize: 18 } : null]}
+                    numberOfLines={1}
+                    adjustsFontSizeToFit
+                  >
+                    {usersLabel ?? num}
+                  </Text>
                 </Pressable>
               </React.Fragment>
             );
