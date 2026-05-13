@@ -60,6 +60,16 @@ export type RichBlock =
       pageNum: number | null;
     }
   | {
+      // User-uploaded file rendered as a rich card in the chat bubble
+      // (next to the user's text). Tap → file detail screen.
+      type: "user_file";
+      fileId: string;
+      fileName: string;
+      mimeType?: string;
+      sizeBytes?: number;
+      pageCount?: number;
+    }
+  | {
       // Generated file from code interpreter / agent tools. Renders as
       // a download card so the user can fetch the artifact even if the
       // model never explicitly mentioned it in prose.
@@ -100,9 +110,83 @@ export default function AiRichBlock({ block }: Props) {
         pageNum={block.pageNum}
       />
     );
+  if (block.type === "user_file") return <UserFileBlock block={block} />;
   if (block.type === "code_artifact") return <CodeArtifactBlock block={block} />;
   if (block.type === "code_output") return <CodeOutputBlock block={block} />;
   return null;
+}
+
+function UserFileBlock({
+  block,
+}: {
+  block: Extract<RichBlock, { type: "user_file" }>;
+}) {
+  const colors = useColors();
+  const router = useRouter();
+  const sizeLabel =
+    typeof block.sizeBytes === "number"
+      ? block.sizeBytes < 1024
+        ? `${block.sizeBytes} B`
+        : block.sizeBytes < 1024 * 1024
+          ? `${(block.sizeBytes / 1024).toFixed(0)} KB`
+          : `${(block.sizeBytes / 1024 / 1024).toFixed(1)} MB`
+      : null;
+  const isPdf =
+    (block.mimeType ?? "").toLowerCase() === "application/pdf" ||
+    /\.pdf$/i.test(block.fileName);
+  const ext = (block.fileName.split(".").pop() ?? "").toUpperCase();
+  const typeLabel = isPdf ? "PDF" : ext || "DOSYA";
+  const metaParts = [typeLabel];
+  if (sizeLabel) metaParts.push(sizeLabel);
+  if (typeof block.pageCount === "number" && block.pageCount > 0) {
+    metaParts.push(`${block.pageCount} sayfa`);
+  }
+  return (
+    <Pressable
+      onPress={() =>
+        router.push({
+          pathname: "/files/[id]",
+          params: { id: block.fileId },
+        } as never)
+      }
+      style={({ pressed }) => [
+        artStyles.card,
+        {
+          backgroundColor: colors.card,
+          borderColor: colors.border,
+          opacity: pressed ? 0.85 : 1,
+        },
+      ]}
+    >
+      <View
+        style={[
+          artStyles.icon,
+          { backgroundColor: colors.primary + "1A" },
+        ]}
+      >
+        <Feather
+          name={isPdf ? "file-text" : "paperclip"}
+          size={20}
+          color={colors.primary}
+        />
+      </View>
+      <View style={{ flex: 1, minWidth: 0 }}>
+        <Text style={[artStyles.label, { color: colors.mutedForeground }]}>
+          YÜKLENEN DOSYA
+        </Text>
+        <Text
+          style={[artStyles.name, { color: colors.foreground }]}
+          numberOfLines={2}
+        >
+          {block.fileName}
+        </Text>
+        <Text style={[artStyles.meta, { color: colors.mutedForeground }]}>
+          {metaParts.join(" · ")}
+        </Text>
+      </View>
+      <Feather name="chevron-right" size={18} color={colors.mutedForeground} />
+    </Pressable>
+  );
 }
 
 function CodeArtifactBlock({
