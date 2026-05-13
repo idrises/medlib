@@ -196,18 +196,26 @@ export default function FilesScreen() {
             {item.name}
           </Text>
           <View style={styles.rowMeta}>
-            <Text style={[styles.rowMetaText, { color: colors.mutedForeground }]}>
-              {formatBytes(item.sizeBytes)}
-            </Text>
-            <Text style={[styles.rowMetaText, { color: colors.mutedForeground }]}>·</Text>
-            {item.chunkCount && item.chunkCount > 0 ? (
+            {item.extension ? (
               <>
                 <Text style={[styles.rowMetaText, { color: colors.mutedForeground }]}>
-                  {item.chunkCount} parça
+                  {item.extension.toUpperCase()}
                 </Text>
                 <Text style={[styles.rowMetaText, { color: colors.mutedForeground }]}>·</Text>
               </>
             ) : null}
+            <Text style={[styles.rowMetaText, { color: colors.mutedForeground }]}>
+              {formatBytes(item.sizeBytes)}
+            </Text>
+            {item.pageCount && item.pageCount > 0 ? (
+              <>
+                <Text style={[styles.rowMetaText, { color: colors.mutedForeground }]}>·</Text>
+                <Text style={[styles.rowMetaText, { color: colors.mutedForeground }]}>
+                  {item.pageCount} sayfa
+                </Text>
+              </>
+            ) : null}
+            <Text style={[styles.rowMetaText, { color: colors.mutedForeground }]}>·</Text>
             <Text style={[styles.rowMetaText, { color: colors.mutedForeground }]}>
               {formatDate(item.uploadedAt)}
             </Text>
