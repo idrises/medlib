@@ -48,7 +48,7 @@ import {
   stopCurrentPlayback,
   onSilenceDetected,
 } from "@/services/voiceApi";
-import { uploadUserFile } from "@/services/filesApi";
+import { MAX_UPLOAD_BYTES, uploadUserFile } from "@/services/filesApi";
 import AiRichBlock, { type RichBlock } from "@/components/AiRichBlock";
 import MarkdownText from "@/components/MarkdownText";
 import MessageActionBar from "@/components/MessageActionBar";
@@ -93,6 +93,49 @@ function genId() {
 const CITE_RE = /\s*\[\[cite:[A-Za-z0-9_\-]{1,80}(?::\d{1,5})?\]\]/g;
 function stripCiteMarkers(s: string): string {
   return s.replace(CITE_RE, "").replace(/[ \t]+\n/g, "\n");
+}
+
+// Parse `[[cite:fileId:pageNum]]` markers out of an assistant message and
+// emit synthetic file_citation rich blocks. Acts as a safety net: the
+// backend already extracts these into proper blocks at end of stream,
+// but a stale message or a backend miss should still render chips so
+// the user can verify the source.
+const CITE_PARSE_RE = /\[\[cite:([A-Za-z0-9_\-]{1,80})(?::(\d{1,5}))?\]\]/g;
+function extractCitationBlocksFromText(text: string): RichBlock[] {
+  if (!text) return [];
+  const seen = new Set<string>();
+  const out: RichBlock[] = [];
+  let m: RegExpExecArray | null;
+  CITE_PARSE_RE.lastIndex = 0;
+  while ((m = CITE_PARSE_RE.exec(text)) !== null) {
+    const fileId = m[1];
+    const pageNum = m[2] ? Number(m[2]) : null;
+    const key = `${fileId}|${pageNum ?? ""}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({
+      type: "file_citation",
+      fileId,
+      fileName: fileId,
+      pageNum,
+    });
+  }
+  return out;
+}
+
+function mergeCitationBlocks(
+  blocks: RichBlock[] | undefined,
+  fromText: RichBlock[],
+): RichBlock[] {
+  if (!fromText.length) return blocks ?? [];
+  const have = new Set<string>();
+  for (const b of blocks ?? []) {
+    if (b.type === "file_citation") have.add(`${b.fileId}|${b.pageNum ?? ""}`);
+  }
+  const extras = fromText.filter(
+    (b) => b.type === "file_citation" && !have.has(`${b.fileId}|${b.pageNum ?? ""}`),
+  );
+  return [...(blocks ?? []), ...extras];
 }
 
 interface RetryPayload {
@@ -305,6 +348,17 @@ export default function AiChatScreen() {
       } as any);
       if (result.canceled || !result.assets?.[0]) return;
       const a = result.assets[0];
+      // 50 MB client-side guard — mirrors the server's MAX_FILE_BYTES
+      // so we don't waste the user's bandwidth on something the API
+      // will reject. Server still enforces the limit; this is purely
+      // a friendly pre-check.
+      if (typeof a.size === "number" && a.size > MAX_UPLOAD_BYTES) {
+        Alert.alert(
+          "Dosya çok büyük",
+          `Tek dosya en fazla ${Math.round(MAX_UPLOAD_BYTES / (1024 * 1024))} MB olabilir.`,
+        );
+        return;
+      }
       const localId = genId();
       const fallbackName = a.name ?? "dosya";
       const declaredMime: string =
@@ -1046,7 +1100,10 @@ export default function AiChatScreen() {
                 baseSize={14}
               />
             ) : null}
-            {item.blocks?.map((b, i) => <AiRichBlock key={i} block={b} />)}
+            {mergeCitationBlocks(
+              item.blocks,
+              extractCitationBlocksFromText(item.content),
+            ).map((b, i) => <AiRichBlock key={i} block={b} />)}
           </View>
           {isErr && item.retryPayload ? (
             <Pressable
