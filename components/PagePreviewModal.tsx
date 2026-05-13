@@ -19,7 +19,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 
 import { useColors } from "@/hooks/useColors";
 import { API_BASE_URL } from "@/services/api";
-import { FilePagePreview, getFilePage } from "@/services/filesApi";
+import { FilePagePreview, getFilePage, listFilePages } from "@/services/filesApi";
 
 interface Props {
   visible: boolean;
@@ -43,6 +43,9 @@ export default function PagePreviewModal({
   const [data, setData] = useState<FilePagePreview | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Upper bound for the pager. null = unknown (don't disable Next yet);
+  // 0 = file has no pages; >0 = last page index.
+  const [pageCount, setPageCount] = useState<number | null>(null);
 
   // Reset when opened with a new (file, page) pair.
   useEffect(() => {
@@ -50,8 +53,27 @@ export default function PagePreviewModal({
       setPage(initialPage);
       setData(null);
       setError(null);
+      setPageCount(null);
     }
   }, [visible, initialPage, fileId]);
+
+  // Fetch the file's total page count once per open so the pager can
+  // disable the Next button at the last page rather than stepping
+  // into repeated 404s.
+  useEffect(() => {
+    if (!visible) return;
+    let cancelled = false;
+    listFilePages(fileId)
+      .then((p) => {
+        if (!cancelled) setPageCount(p.pageCount);
+      })
+      .catch(() => {
+        if (!cancelled) setPageCount(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [visible, fileId]);
 
   // Fetch the page preview whenever the active page changes while open.
   useEffect(() => {
@@ -114,7 +136,9 @@ export default function PagePreviewModal({
     if (page && page > 1) setPage(page - 1);
   };
   const goNext = () => {
-    if (page) setPage(page + 1);
+    if (!page) return;
+    if (pageCount !== null && page >= pageCount) return;
+    setPage(page + 1);
   };
 
   return (
@@ -219,19 +243,26 @@ export default function PagePreviewModal({
                 <Feather name="chevron-left" size={18} color={colors.foreground} />
               </Pressable>
               <Text style={[styles.pagerText, { color: colors.mutedForeground }]}>
-                Sayfa {page}
+                {pageCount !== null && pageCount > 0
+                  ? `Sayfa ${page} / ${pageCount}`
+                  : `Sayfa ${page}`}
               </Text>
               <Pressable
                 onPress={goNext}
-                disabled={loading}
+                disabled={
+                  loading || (pageCount !== null && page >= pageCount)
+                }
                 hitSlop={10}
-                style={({ pressed }) => [
-                  styles.pagerBtn,
-                  {
-                    borderColor: colors.border,
-                    opacity: loading ? 0.4 : pressed ? 0.7 : 1,
-                  },
-                ]}
+                style={({ pressed }) => {
+                  const atEnd = pageCount !== null && page >= pageCount;
+                  return [
+                    styles.pagerBtn,
+                    {
+                      borderColor: colors.border,
+                      opacity: loading || atEnd ? 0.4 : pressed ? 0.7 : 1,
+                    },
+                  ];
+                }}
               >
                 <Feather
                   name="chevron-right"
