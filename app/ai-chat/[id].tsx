@@ -746,46 +746,77 @@ export default function AiChatScreen() {
 
     const userBlocks: RichBlock[] = [];
     const attachmentsForSend: AiAttachment[] = [];
+    const fileAttachmentsSeen = new Set<string>();
     for (const a of pendingAttachments) {
       if (a.type === "image" && a.data) {
         attachmentsForSend.push({ type: "image", data: a.data });
         userBlocks.push({ type: "image", url: `data:image/jpeg;base64,${a.data}`, alt: "Yüklenen görsel" });
       } else if (a.type === "pdf") {
+        // PDFs use the legacy inline path so the model still sees the
+        // text content directly. They ALSO get a structured `file`
+        // attachment when uploaded so the agent can call get_file_page
+        // for paginated reads later.
         attachmentsForSend.push({ type: "pdf", data: a.data, text: a.text, name: a.name });
+        if (a.fileId && !fileAttachmentsSeen.has(a.fileId)) {
+          attachmentsForSend.push({
+            type: "file",
+            fileId: a.fileId,
+            name: a.name,
+            mimeType: a.mimeType,
+            sizeBytes: a.sizeBytes,
+          });
+          fileAttachmentsSeen.add(a.fileId);
+        }
+      } else if (a.type === "file" && a.fileId) {
+        attachmentsForSend.push({
+          type: "file",
+          fileId: a.fileId,
+          name: a.name,
+          mimeType: a.mimeType,
+          sizeBytes: a.sizeBytes,
+        });
+        fileAttachmentsSeen.add(a.fileId);
       }
-      // `type === "file"` uploads are stored in the user file panel via
-      // /api/files/upload and referenced by fileId. The chat payload
-      // doesn't carry the bytes — instead we surface a `(file_id: ...)`
-      // hint inside the user message text so the agent picks it up via
-      // search_user_files / get_file_page on the server side. The chip
-      // strip in the bubble already shows the user a friendly icon.
     }
-    const userPdfNames = pendingAttachments.filter(a => a.type === "pdf").map(a => a.name ?? "document.pdf");
-    // Include any attachment that has a fileId — covers both explicit
-    // "file" uploads (no inline bytes) and PDFs whose base64 extraction
-    // failed but were still uploaded to /files/upload as a fallback.
-    const userFiles = pendingAttachments.filter(a => !!a.fileId && a.type !== "image");
-    // If we got here from "AI'a sor" on a file-detail screen, include the
-    // referenced file as a hint too so the first turn has the binding.
-    const prefillFileHint = prefillFileId
-      ? [{ fileId: String(prefillFileId), name: prefillFileName ? String(prefillFileName) : "dosya" }]
-      : [];
-    const allFileHints = [
-      ...userFiles.map((a) => ({ fileId: String(a.fileId), name: a.name ?? "dosya" })),
-      ...prefillFileHint.filter((p) => !userFiles.some((a) => a.fileId === p.fileId)),
-    ];
-    const fileHint = allFileHints.length
-      ? `\n\n[Sistem notu — kullanıcı şu dosya(lar)ı yükledi, gerekirse search_user_files / get_file_page ile incele: ${allFileHints
-          .map((a) => `${a.name} (file_id: ${a.fileId})`)
-          .join(", ")}]`
-      : "";
-    const textForAi = text + fileHint;
-    const displayContent =
-      text +
-      (userPdfNames.length ? `\n📎 ${userPdfNames.join(", ")}` : "") +
-      (userFiles.length
-        ? `\n📎 ${userFiles.map((a) => a.name ?? "dosya").join(", ")}`
-        : "");
+
+    // Surface any uploaded file as a rich `user_file` card in the user's
+    // own bubble so the chat history is readable at a glance (rather
+    // than a bare 📎 emoji line). The card also doubles as a quick
+    // shortcut to the file detail screen.
+    for (const a of pendingAttachments) {
+      if (!a.fileId || a.type === "image") continue;
+      userBlocks.push({
+        type: "user_file",
+        fileId: a.fileId,
+        fileName: a.name ?? "dosya",
+        mimeType: a.mimeType,
+        sizeBytes: a.sizeBytes,
+      });
+    }
+
+    // If we got here from "AI'a sor" on a file-detail screen and the
+    // user didn't explicitly attach the file in this turn, attach it
+    // implicitly so the first turn has the binding without a free-text
+    // hint. The server will hydrate name/mime/size/pageCount.
+    if (prefillFileId && !fileAttachmentsSeen.has(String(prefillFileId))) {
+      const pid = String(prefillFileId);
+      attachmentsForSend.push({
+        type: "file",
+        fileId: pid,
+        name: prefillFileName ? String(prefillFileName) : undefined,
+      });
+      userBlocks.push({
+        type: "user_file",
+        fileId: pid,
+        fileName: prefillFileName ? String(prefillFileName) : "dosya",
+      });
+      fileAttachmentsSeen.add(pid);
+    }
+
+    // No more `[Sistem notu — file_id: ...]` text hint — the structured
+    // attachments above carry everything the server needs.
+    const textForAi = text;
+    const displayContent = text;
     setPendingAttachments([]);
 
     await performSend(textForAi, attachmentsForSend, userBlocks, displayContent);
