@@ -11,6 +11,36 @@ async function getToken(): Promise<string | null> {
   }
 }
 
+/**
+ * Discriminated-union "kind" the server returns for each file (Task #145).
+ * - 'Uploaded'   : kuyrukta, henüz çıkarılmadı
+ * - 'Extracting' : metin/sayfa çıkarımı sürüyor (DB Status='processing')
+ * - 'Extracted'  : metin var, embedding bekliyor
+ * - 'Embedding'  : Qdrant'a vektörleniyor
+ * - 'Ready'      : arama/sohbet için hazır
+ * - 'Failed'     : hata — `lastFailureReason` ile sınıflandırılmış
+ * - 'Cancelled'  : kullanıcı veya sistem iptal etti
+ * - null         : terminal/tombstone bir satır (deleted/expired)
+ */
+export type FileStateKind =
+  | "Uploaded"
+  | "Extracting"
+  | "Extracted"
+  | "Embedding"
+  | "Ready"
+  | "Failed"
+  | "Cancelled";
+
+export type FileFailureReason =
+  | "extract_error"
+  | "embed_rate_limit"
+  | "embed_quota"
+  | "embed_unknown"
+  | "storage_missing"
+  | "stale"
+  | "timeout"
+  | "unknown";
+
 export interface UserFileDto {
   fileId: string;
   name: string;
@@ -19,7 +49,20 @@ export interface UserFileDto {
   extension: string | null;
   sizeBytes: number;
   sha256: string;
+  /** Eski string status (legacy) — yeni kod yerine `stateKind` kullanmalı. */
   status: string;
+  /** Task #145 — state machine kind, veya legacy/tombstone için null. */
+  stateKind?: FileStateKind | null;
+  /** Task #145 — Failed durumdaki sub-classification. */
+  lastFailureReason?: FileFailureReason | string | null;
+  /** Task #145 — son hata metni (truncated, server tarafında saklanır). */
+  errorMessage?: string | null;
+  /** Task #145 — /retry kaç kez tetiklendi. */
+  retryCount?: number;
+  /** Task #145 — son durum değişimi (ISO). */
+  statusChangedAt?: string | null;
+  /** Task #145 — server bu satır için /retry butonunu açık ediyor mu. */
+  canRetry?: boolean;
   chunkCount: number | null;
   /** Sayfa sayısı — PDF/DOCX/PPTX gibi sayfalı dosyalarda dolar; ingestion bitince ayarlanır. */
   pageCount: number | null;
@@ -199,6 +242,32 @@ export async function listUserFiles(): Promise<ListFilesResponse> {
   });
   if (!res.ok) throw new Error(`Dosyalar listelenemedi (${res.status})`);
   return (await res.json()) as ListFilesResponse;
+}
+
+/**
+ * Task #145 — `Failed` durumundaki bir dosyayı tekrar dener. Server,
+ * `lastFailureReason`'a göre doğru noktadan devam eder (embed_* hataları
+ * Extracted'tan, diğerleri Uploaded'dan). 429 = retry sınırı (5) aşıldı.
+ */
+export async function retryUserFile(fileId: string): Promise<UserFileDto> {
+  const token = await getToken();
+  if (!token) throw new Error("Oturum bulunamadı.");
+  const res = await fetch(
+    `${API_BASE_URL}/files/${encodeURIComponent(fileId)}/retry`,
+    {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+    },
+  );
+  if (!res.ok) {
+    let msg = `Tekrar denenemedi (${res.status})`;
+    try {
+      const j = (await res.json()) as { error?: string };
+      if (j?.error) msg = j.error;
+    } catch {}
+    throw new Error(msg);
+  }
+  return (await res.json()) as UserFileDto;
 }
 
 export async function deleteUserFile(fileId: string): Promise<void> {
