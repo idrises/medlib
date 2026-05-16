@@ -24,9 +24,12 @@ import { API_BASE_URL } from "@/services/api";
 import {
   type FileSubStatus,
   UserFileDto,
+  ZipInventoryEntry,
+  ZipInventoryResponse,
   deleteUserFile,
   getFilePage,
   getUserFile,
+  getZipInventory,
   listFilePages,
 } from "@/services/filesApi";
 
@@ -50,6 +53,10 @@ export default function FileDetailScreen() {
   const [busy, setBusy] = useState(false);
   const [pageCount, setPageCount] = useState<number>(0);
   const [previewPage, setPreviewPage] = useState<number | null>(null);
+  // Task #161 — ZIP child inventory for .zip uploads. `null` while
+  // loading / not applicable; mobile only fetches when ext === "zip".
+  const [zipInventory, setZipInventory] =
+    useState<ZipInventoryResponse | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -64,6 +71,20 @@ export default function FileDetailScreen() {
         setPageCount(p.pageCount);
       } catch {
         setPageCount(0);
+      }
+      // Task #161 — pull ZIP inventory only for .zip uploads. 404
+      // (file isn't a zip or has no inventory yet) just hides the
+      // section; other failures hide it too rather than blocking the
+      // detail screen.
+      if ((f.extension ?? "").toLowerCase() === "zip") {
+        try {
+          const inv = await getZipInventory(fileId);
+          setZipInventory(inv);
+        } catch {
+          setZipInventory(null);
+        }
+      } else {
+        setZipInventory(null);
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : "Dosya bulunamadı.";
@@ -245,15 +266,27 @@ export default function FileDetailScreen() {
             colors={colors}
           />
 
+          {zipInventory && zipInventory.entries.length > 0 ? (
+            <ZipChildGrid inventory={zipInventory} colors={colors} />
+          ) : null}
+
           {pageCount > 0 ? (
             <View style={{ marginTop: 18 }}>
+              {/* Task #155 — PPTX uses the same per-page thumb grid (slides
+                  are written to appFilePages as JPEG q80 renders), we just
+                  swap the section label so users see "Slaytlar" instead
+                  of "Sayfalar" for decks. */}
               <Text style={[styles.galleryTitle, { color: colors.foreground }]}>
-                Sayfalar ({pageCount})
+                {file.name?.toLowerCase().endsWith(".pptx")
+                  ? `Slaytlar (${pageCount})`
+                  : `Sayfalar (${pageCount})`}
               </Text>
               <Text
                 style={[styles.gallerySub, { color: colors.mutedForeground }]}
               >
-                Önizlemek için bir sayfaya dokun.
+                {file.name?.toLowerCase().endsWith(".pptx")
+                  ? "Önizlemek için bir slayta dokun."
+                  : "Önizlemek için bir sayfaya dokun."}
               </Text>
               <FlatList
                 data={Array.from({ length: pageCount }, (_, i) => i + 1)}
@@ -390,6 +423,131 @@ function PageThumb({ fileId, pageNum, onPress, colors }: PageThumbProps) {
   );
 }
 
+/**
+ * Task #161 — ZIP child grid. Renders one row per archive entry with
+ * its path, detected MIME family, size, and (for skipped entries) a
+ * coloured chip explaining why it wasn't processed. Long lists are
+ * scrollable inside the parent ScrollView via maxHeight; the
+ * `byMime` / `bySkipReason` aggregates sit above the list as
+ * summary chips so the user can scan the bundle's makeup quickly.
+ */
+function ZipChildGrid({
+  inventory,
+  colors,
+}: {
+  inventory: ZipInventoryResponse;
+  colors: ReturnType<typeof useColors>;
+}) {
+  return (
+    <View style={{ marginTop: 18 }}>
+      <Text style={[styles.galleryTitle, { color: colors.foreground }]}>
+        Arşiv içeriği ({inventory.total})
+      </Text>
+      <Text style={[styles.gallerySub, { color: colors.mutedForeground }]}>
+        {inventory.processed} işlendi · {inventory.skipped} atlandı · toplam{" "}
+        {formatBytes(inventory.totalUncompressedBytes)}
+      </Text>
+      {inventory.byMime.length > 0 ? (
+        <View style={styles.chipsRow}>
+          {inventory.byMime.slice(0, 6).map((m) => (
+            <View
+              key={`mime-${m.mime}`}
+              style={[
+                styles.chip,
+                { backgroundColor: colors.muted, borderColor: colors.border },
+              ]}
+            >
+              <Text style={[styles.chipLabel, { color: colors.mutedForeground }]}>
+                {m.mime}
+              </Text>
+              <Text style={[styles.chipValue, { color: colors.foreground }]}>
+                {m.count}
+              </Text>
+            </View>
+          ))}
+        </View>
+      ) : null}
+      {inventory.bySkipReason.length > 0 ? (
+        <View style={styles.chipsRow}>
+          {inventory.bySkipReason.map((s) => (
+            <View
+              key={`skip-${s.reason}`}
+              style={[
+                styles.chip,
+                { backgroundColor: "#dc262622", borderColor: "#dc262655" },
+              ]}
+            >
+              <Text style={[styles.chipLabel, { color: "#b91c1c" }]}>
+                {s.label}
+              </Text>
+              <Text style={[styles.chipValue, { color: "#b91c1c" }]}>
+                {s.count}
+              </Text>
+            </View>
+          ))}
+        </View>
+      ) : null}
+      <View style={{ gap: 6, marginTop: 8 }}>
+        {inventory.entries.slice(0, 100).map((e) => (
+          <ZipChildRow key={`ze-${e.childIdx}`} entry={e} colors={colors} />
+        ))}
+        {inventory.entries.length > 100 ? (
+          <Text
+            style={{
+              color: colors.mutedForeground,
+              fontSize: 12,
+              marginTop: 4,
+              textAlign: "center",
+            }}
+          >
+            +{inventory.entries.length - 100} satır daha gösterilmedi.
+          </Text>
+        ) : null}
+      </View>
+    </View>
+  );
+}
+
+function ZipChildRow({
+  entry,
+  colors,
+}: {
+  entry: ZipInventoryEntry;
+  colors: ReturnType<typeof useColors>;
+}) {
+  const isSkipped = !!entry.skippedReason;
+  return (
+    <View
+      style={[
+        styles.zipRow,
+        { borderColor: colors.border, backgroundColor: colors.muted },
+      ]}
+    >
+      <Feather
+        name={isSkipped ? "alert-triangle" : "file"}
+        size={14}
+        color={isSkipped ? "#b91c1c" : colors.mutedForeground}
+        style={{ marginTop: 2 }}
+      />
+      <View style={{ flex: 1, minWidth: 0 }}>
+        <Text
+          style={{ color: colors.foreground, fontSize: 13 }}
+          numberOfLines={1}
+          ellipsizeMode="middle"
+        >
+          {entry.originalPath}
+        </Text>
+        <Text
+          style={{ color: colors.mutedForeground, fontSize: 11, marginTop: 2 }}
+        >
+          {(entry.detectedMime ?? "—") + " · " + formatBytes(entry.sizeBytes)}
+          {isSkipped ? ` · ${entry.skippedLabel ?? entry.skippedReason}` : ""}
+        </Text>
+      </View>
+    </View>
+  );
+}
+
 function InfoRow({
   label,
   value,
@@ -507,6 +665,15 @@ const styles = StyleSheet.create({
   },
   chipLabel: { fontSize: 11, fontFamily: "Inter_600SemiBold" },
   chipValue: { fontSize: 11, fontFamily: "Inter_500Medium" },
+  zipRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderRadius: 8,
+    borderWidth: StyleSheet.hairlineWidth,
+  },
   header: {
     paddingHorizontal: 16,
     paddingBottom: 10,
