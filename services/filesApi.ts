@@ -266,6 +266,62 @@ export async function listFilePages(fileId: string): Promise<FilePagesResponse> 
   return (await res.json()) as FilePagesResponse;
 }
 
+/**
+ * Task #161 — ZIP child inventory. Returns per-entry metadata plus
+ * aggregate counts so the file detail screen can render a child
+ * grid for .zip uploads. Throws on transport / 401 errors; returns
+ * `null` on 404 (file isn't a ZIP / has no inventory yet) so the UI
+ * can hide the section without an error banner.
+ */
+export type ZipSkipReason =
+  | "unsafe_path"
+  | "entry_too_large"
+  | "encrypted"
+  | "compression_ratio"
+  | "total_uncompressed_cap"
+  | "entry_count_cap"
+  | "open_failed"
+  | "stream_error"
+  | "nested_zip";
+
+export interface ZipInventoryEntry {
+  childIdx: number;
+  childFileId: string | null;
+  originalPath: string;
+  detectedMime: string | null;
+  sizeBytes: number;
+  compressedBytes: number;
+  skippedReason: ZipSkipReason | null;
+  skippedLabel: string | null;
+  extractedChars: number;
+}
+
+export interface ZipInventoryResponse {
+  fileId: string;
+  fileName: string;
+  total: number;
+  processed: number;
+  skipped: number;
+  totalUncompressedBytes: number;
+  byMime: Array<{ mime: string; count: number }>;
+  bySkipReason: Array<{ reason: ZipSkipReason; label: string; count: number }>;
+  entries: ZipInventoryEntry[];
+}
+
+export async function getZipInventory(
+  fileId: string,
+): Promise<ZipInventoryResponse | null> {
+  const token = await getToken();
+  if (!token) throw new Error("Oturum bulunamadı.");
+  const res = await fetch(
+    `${API_BASE_URL}/files/${encodeURIComponent(fileId)}/zip-inventory`,
+    { headers: { Authorization: `Bearer ${token}` } },
+  );
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`ZIP içeriği alınamadı (${res.status})`);
+  return (await res.json()) as ZipInventoryResponse;
+}
+
 export async function listUserFiles(): Promise<ListFilesResponse> {
   const token = await getToken();
   if (!token) throw new Error("Oturum bulunamadı.");
