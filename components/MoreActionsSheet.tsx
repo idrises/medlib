@@ -16,7 +16,10 @@ interface MoreActionsSheetProps {
   onCopy: () => void;
   onShare: () => void;
   onShowRaw: () => void;
-  onReport: () => void;
+  onToggleSave: () => void;
+  onSendFeedback: () => void;
+  isSaved: boolean;
+  canSave: boolean;
 }
 
 export function MoreActionsSheet({
@@ -25,14 +28,30 @@ export function MoreActionsSheet({
   onCopy,
   onShare,
   onShowRaw,
-  onReport,
+  onToggleSave,
+  onSendFeedback,
+  isSaved,
+  canSave,
 }: MoreActionsSheetProps) {
   const colors = useColors();
-  const items = [
-    { icon: "copy" as const, label: "Kopyala", onPress: onCopy },
-    { icon: "share-2" as const, label: "Paylaş", onPress: onShare },
-    { icon: "file-text" as const, label: "Ham metni göster", onPress: onShowRaw },
-    { icon: "flag" as const, label: "Mesajı bildir", onPress: onReport },
+  const items: Array<{
+    icon: React.ComponentProps<typeof Feather>["name"];
+    label: string;
+    onPress: () => void;
+    disabled?: boolean;
+    accent?: string;
+  }> = [
+    { icon: "copy", label: "Kopyala", onPress: onCopy },
+    { icon: "share-2", label: "Paylaş", onPress: onShare },
+    {
+      icon: isSaved ? "bookmark" : "bookmark",
+      label: isSaved ? "Kayıttan çıkar" : "Mesajı kaydet",
+      onPress: onToggleSave,
+      disabled: !canSave,
+      accent: isSaved ? colors.primary : undefined,
+    },
+    { icon: "file-text", label: "Ham metni göster", onPress: onShowRaw },
+    { icon: "message-square", label: "Geri bildirim gönder", onPress: onSendFeedback },
   ];
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
@@ -48,18 +67,34 @@ export function MoreActionsSheet({
                 key={i}
                 accessibilityRole="button"
                 accessibilityLabel={it.label}
+                accessibilityState={{ disabled: it.disabled }}
+                disabled={it.disabled}
                 onPress={() => {
                   onClose();
                   setTimeout(() => it.onPress(), 0);
                 }}
                 style={({ pressed }) => [
                   styles.row,
-                  { backgroundColor: pressed ? colors.muted : "transparent" },
+                  {
+                    backgroundColor: pressed && !it.disabled ? colors.muted : "transparent",
+                    opacity: it.disabled ? 0.4 : 1,
+                  },
                 ]}
                 hitSlop={10}
               >
-                <Feather name={it.icon} size={18} color={colors.foreground} />
-                <Text style={[styles.label, { color: colors.foreground }]}>{it.label}</Text>
+                <Feather
+                  name={it.icon}
+                  size={18}
+                  color={it.accent ?? colors.foreground}
+                />
+                <Text
+                  style={[
+                    styles.label,
+                    { color: it.accent ?? colors.foreground },
+                  ]}
+                >
+                  {it.label}
+                </Text>
               </Pressable>
             ))}
           </ScrollView>
