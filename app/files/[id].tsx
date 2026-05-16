@@ -18,6 +18,8 @@ import {
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
+import { useVideoPlayer, VideoView } from "expo-video";
+
 import PagePreviewModal from "@/components/PagePreviewModal";
 import { useColors } from "@/hooks/useColors";
 import { API_BASE_URL } from "@/services/api";
@@ -300,7 +302,12 @@ export default function FileDetailScreen() {
           transcript.ok &&
           transcript.segments &&
           transcript.segments.length > 0 ? (
-            <MediaTranscriptPanel transcript={transcript} colors={colors} />
+            <MediaPlayerSection
+              fileId={file.fileId}
+              ext={(file.extension ?? "").toLowerCase()}
+              transcript={transcript}
+              colors={colors}
+            />
           ) : null}
 
           {pageCount > 0 ? (
@@ -686,10 +693,21 @@ function chipPalette(
  * "Dosyayı aç / paylaş" button in the existing share-sheet flow so we
  * stay within the OTA layer (no native module additions).
  */
-function MediaTranscriptPanel({
+/**
+ * Task #162 — expo-video player + tap-to-seek transcript. expo-video's
+ * AVPlayer/ExoPlayer backend handles both audio and video sources; for
+ * audio uploads we still mount <VideoView> (a small bar with native
+ * controls) so the same seek API works in both cases. Tapping a row in
+ * the transcript jumps the player to that segment's start time.
+ */
+function MediaPlayerSection({
+  fileId,
+  ext,
   transcript,
   colors,
 }: {
+  fileId: string;
+  ext: string;
   transcript: MediaTranscriptResponse;
   colors: ReturnType<typeof useColors>;
 }) {
@@ -697,19 +715,59 @@ function MediaTranscriptPanel({
   const totalSec = transcript.durationSec ?? 0;
   const mm = Math.floor(totalSec / 60);
   const ss = Math.round(totalSec % 60);
+  const isVideo = ["mp4", "mov", "webm", "mkv", "m4v"].includes(ext);
+  const src = `${API_BASE_URL}/files/${fileId}/download`;
+  const player = useVideoPlayer(src, (p) => {
+    p.timeUpdateEventInterval = 1;
+  });
+  const seek = useCallback(
+    (sec: number) => {
+      try {
+        player.currentTime = Math.max(0, sec);
+        player.play();
+      } catch {
+        /* player not ready */
+      }
+    },
+    [player],
+  );
   return (
     <View style={{ marginTop: 18 }}>
       <Text style={[styles.galleryTitle, { color: colors.foreground }]}>
+        {isVideo ? "Video" : "Ses"}
+      </Text>
+      <View
+        style={{
+          marginTop: 8,
+          borderRadius: 12,
+          overflow: "hidden",
+          backgroundColor: "#000",
+          aspectRatio: isVideo ? 16 / 9 : undefined,
+          height: isVideo ? undefined : 56,
+        }}
+      >
+        <VideoView
+          player={player}
+          style={{ flex: 1 }}
+          nativeControls
+          contentFit="contain"
+          allowsFullscreen={isVideo}
+        />
+      </View>
+      <Text
+        style={[styles.galleryTitle, { color: colors.foreground, marginTop: 16 }]}
+      >
         Transkript ({segs.length})
       </Text>
       <Text style={[styles.gallerySub, { color: colors.mutedForeground }]}>
-        {`Süre ~${mm}:${String(ss).padStart(2, "0")} · Whisper`}
+        {`Süre ~${mm}:${String(ss).padStart(2, "0")} · Whisper · Atlama için satıra dokun.`}
       </Text>
       <View style={{ marginTop: 10, gap: 6, maxHeight: 360 }}>
         <ScrollView nestedScrollEnabled showsVerticalScrollIndicator>
           {segs.slice(0, 200).map((s) => (
-            <View
+            <Pressable
               key={`seg-${s.idx}`}
+              onPress={() => seek(s.startSec)}
               style={[
                 styles.zipRow,
                 { borderColor: colors.border, alignItems: "flex-start" },
@@ -717,10 +775,11 @@ function MediaTranscriptPanel({
             >
               <Text
                 style={{
-                  color: colors.mutedForeground,
+                  color: colors.primary ?? colors.mutedForeground,
                   fontVariant: ["tabular-nums"],
                   width: 56,
                   fontSize: 12,
+                  fontFamily: "Inter_600SemiBold",
                 }}
               >
                 {s.timestamp}
@@ -728,7 +787,7 @@ function MediaTranscriptPanel({
               <Text style={{ color: colors.foreground, flex: 1, fontSize: 13 }}>
                 {s.text}
               </Text>
-            </View>
+            </Pressable>
           ))}
           {segs.length > 200 ? (
             <Text
