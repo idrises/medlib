@@ -41,6 +41,34 @@ export type FileFailureReason =
   | "timeout"
   | "unknown";
 
+/**
+ * Task #153 — per-capability sub-status enum. NULL/undefined means
+ * "legacy/unknown" — the mobile chip then falls back to the row's
+ * Status + ChunkCount + PageCount signals.
+ */
+export type FileSubStatus =
+  | "pending"
+  | "ok"
+  | "partial"
+  | "failed"
+  | "not_supported"
+  | "not_needed";
+
+export interface FileSubStatuses {
+  text: FileSubStatus | null;
+  render: FileSubStatus | null;
+  ocr: FileSubStatus | null;
+  table: FileSubStatus | null;
+  figure: FileSubStatus | null;
+}
+
+export interface FileCapabilityFlags {
+  canSearchText: boolean;
+  canRenderPages: boolean;
+  canUseVision: boolean;
+  canAnswer: boolean;
+}
+
 export interface UserFileDto {
   fileId: string;
   name: string;
@@ -68,6 +96,10 @@ export interface UserFileDto {
   pageCount: number | null;
   uploadedAt: string;
   lastAccessedAt: string;
+  /** Task #153 — per-capability sub-statuses (5 eksen). Eski sunucularda gelmez. */
+  subStatuses?: FileSubStatuses;
+  /** Task #153 — server'da türetilmiş yetenek flag'leri. Eski sunucularda gelmez. */
+  flags?: FileCapabilityFlags;
   deduped?: boolean;
 }
 
