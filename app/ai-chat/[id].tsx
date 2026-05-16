@@ -38,6 +38,8 @@ import {
   streamAiMessage,
   postAiFeedback,
   deleteAiFeedback,
+  saveAiMessage,
+  unsaveAiMessage,
 } from "@/services/aiApi";
 import {
   startRecording,
@@ -52,6 +54,8 @@ import { MAX_UPLOAD_BYTES, listFilePages, uploadUserFile } from "@/services/file
 import AiRichBlock, { type RichBlock } from "@/components/AiRichBlock";
 import MarkdownText from "@/components/MarkdownText";
 import MessageActionBar from "@/components/MessageActionBar";
+import { Snackbar, type SnackbarTone } from "@/components/Snackbar";
+import { FeedbackModal } from "@/components/FeedbackModal";
 
 const TOOL_LABELS: Record<string, string> = {
   search_library: "Kütüphane aranıyor",
@@ -152,6 +156,7 @@ interface LocalMessage {
   blocks?: RichBlock[];
   serverId?: number;
   rating?: number | null;
+  saved?: boolean;
   isError?: boolean;
   retryPayload?: RetryPayload;
 }
@@ -218,6 +223,15 @@ export default function AiChatScreen() {
   const [voiceToast, setVoiceToast] = useState<string | null>(null);
   const voiceToastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  const [toast, setToast] = useState<{ message: string; tone: SnackbarTone; key: number } | null>(null);
+  const showToast = useCallback((message: string, tone: SnackbarTone = "success") => {
+    setToast({ message, tone, key: Date.now() });
+  }, []);
+
+  const [feedbackTarget, setFeedbackTarget] = useState<{ messageId: string; serverId: number; rating: number | null } | null>(null);
+
+  const saveInFlightRef = useRef<Map<string, number>>(new Map());
+
   const showVoiceToast = useCallback((msg: string) => {
     if (voiceToastTimerRef.current) clearTimeout(voiceToastTimerRef.current);
     setVoiceToast(msg);
@@ -261,6 +275,7 @@ export default function AiChatScreen() {
                 blocks: parsed.blocks,
                 serverId: typeof m.id === "number" ? m.id : undefined,
                 rating: m.rating ?? null,
+                saved: m.saved === true,
               };
             })
           );
@@ -1094,6 +1109,39 @@ export default function AiChatScreen() {
     }
   }, []);
 
+  const handleToggleSave = useCallback(
+    async (msgId: string, serverId: number, currentSaved: boolean) => {
+      const next = !currentSaved;
+      const token = (saveInFlightRef.current.get(msgId) ?? 0) + 1;
+      saveInFlightRef.current.set(msgId, token);
+      setMessages((prev) => prev.map((m) => (m.id === msgId ? { ...m, saved: next } : m)));
+      try {
+        if (next) await saveAiMessage(serverId);
+        else await unsaveAiMessage(serverId);
+        if (saveInFlightRef.current.get(msgId) !== token) return; // stale
+        showToast(next ? "Mesaj kaydedildi" : "Kayıttan çıkarıldı", "success");
+      } catch {
+        if (saveInFlightRef.current.get(msgId) !== token) return; // stale; newer op wins
+        setMessages((prev) => prev.map((m) => (m.id === msgId ? { ...m, saved: currentSaved } : m)));
+        showToast("İşlem başarısız", "error");
+      }
+    },
+    [showToast]
+  );
+
+  const handleSubmitFeedback = useCallback(
+    async (rating: 1 | -1, comment: string) => {
+      const target = feedbackTarget;
+      if (!target) return;
+      await postAiFeedback(target.serverId, rating, comment);
+      setMessages((prev) =>
+        prev.map((m) => (m.id === target.messageId ? { ...m, rating } : m))
+      );
+      showToast("Geri bildirim gönderildi", "success");
+    },
+    [feedbackTarget, showToast]
+  );
+
   const renderMessage = ({ item }: { item: LocalMessage }) => {
     if (item.role === "user") {
       return (
@@ -1155,6 +1203,13 @@ export default function AiChatScreen() {
               rating={r}
               onRate={(newRating) => handleRate(item.id, sid, newRating, r)}
               disabled={isStreaming}
+              isSaved={item.saved === true}
+              canSave={!!sid}
+              onToggleSave={() => handleToggleSave(item.id, sid, item.saved === true)}
+              onSendFeedback={() =>
+                setFeedbackTarget({ messageId: item.id, serverId: sid, rating: r })
+              }
+              onToast={showToast}
             />
           ) : null}
         </View>
@@ -1524,6 +1579,20 @@ export default function AiChatScreen() {
           </View>
         </View>
       </KeyboardAvoidingView>
+
+      <Snackbar
+        key={toast?.key ?? "none"}
+        message={toast?.message ?? null}
+        tone={toast?.tone ?? "success"}
+        onHide={() => setToast(null)}
+      />
+
+      <FeedbackModal
+        visible={!!feedbackTarget}
+        initialRating={feedbackTarget?.rating ?? null}
+        onClose={() => setFeedbackTarget(null)}
+        onSubmit={handleSubmitFeedback}
+      />
 
       <Modal
         visible={showThreadModal}
