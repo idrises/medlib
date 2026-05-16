@@ -322,6 +322,52 @@ export async function getZipInventory(
   return (await res.json()) as ZipInventoryResponse;
 }
 
+/**
+ * Task #162 — Media transcript (audio + video). Returns the same shape
+ * as the server-side `get_media_transcript` agent tool with no segment
+ * cap. Returns `null` on 404 (file isn't a media upload or hasn't been
+ * transcribed yet) so the UI can hide the panel without an error.
+ */
+export interface MediaTranscriptSegment {
+  idx: number;
+  startSec: number;
+  endSec: number;
+  timestamp: string;
+  text: string;
+}
+
+export interface MediaTranscriptResponse {
+  ok: boolean;
+  fileId: string;
+  fileName?: string;
+  durationSec?: number | null;
+  segmentCount?: number;
+  segments?: MediaTranscriptSegment[];
+  error?: string;
+}
+
+export async function getMediaTranscript(
+  fileId: string,
+): Promise<MediaTranscriptResponse | null> {
+  const token = await getToken();
+  if (!token) throw new Error("Oturum bulunamadı.");
+  const res = await fetch(
+    `${API_BASE_URL}/files/${encodeURIComponent(fileId)}/media/transcript`,
+    { headers: { Authorization: `Bearer ${token}` } },
+  );
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`Transkript alınamadı (${res.status})`);
+  return (await res.json()) as MediaTranscriptResponse;
+}
+
+/** Build the authenticated keyframe URL for the mobile player. The
+ *  caller appends an `Authorization` header via expo-image's headers
+ *  prop. We expose the URL builder so the caller can also use it as a
+ *  cache key. */
+export function videoFrameUrl(fileId: string, timeSec: number): string {
+  return `${API_BASE_URL}/files/${encodeURIComponent(fileId)}/media/frame/${timeSec.toFixed(2)}`;
+}
+
 export async function listUserFiles(): Promise<ListFilesResponse> {
   const token = await getToken();
   if (!token) throw new Error("Oturum bulunamadı.");
