@@ -19,6 +19,7 @@ import { useColors } from "@/hooks/useColors";
 import AiRichBlock, { type RichBlock } from "@/components/AiRichBlock";
 import MarkdownText from "@/components/MarkdownText";
 import { cleanTranscript, isHallucinatedTranscript } from "@/services/transcriptFilter";
+import { shouldCreateRealtimeResponse } from "@/services/realtimeNoResponseGate";
 import {
   appendVoiceMessage,
   createRealtimeSession,
@@ -373,6 +374,14 @@ export default function AiRealtimeScreen() {
         if (!savedUserHashesRef.current.has(itemId)) {
           savedUserHashesRef.current.add(itemId);
           persistMsg("user", cleaned);
+        }
+        // Backend session has turn_detection.create_response=false, so we must
+        // explicitly trigger the assistant response here. The gate adds a
+        // second filter (STOP commands like "sus/bekle", media subtitles,
+        // too-short non-task utterances) so the model stays silent on noise.
+        const gate = shouldCreateRealtimeResponse(cleaned);
+        if (gate.ok) {
+          sendDataChannel({ type: "response.create" });
         }
       }
     } else if (type === "response.audio_transcript.delta") {
