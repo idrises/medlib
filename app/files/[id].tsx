@@ -716,8 +716,20 @@ function MediaPlayerSection({
   const mm = Math.floor(totalSec / 60);
   const ss = Math.round(totalSec % 60);
   const isVideo = ["mp4", "mov", "webm", "mkv", "m4v"].includes(ext);
-  const src = `${API_BASE_URL}/files/${fileId}/download`;
-  const player = useVideoPlayer(src, (p) => {
+  // Task #162 — /files/:id/download is Bearer-auth only. expo-video
+  // accepts a `VideoSource` with `headers`; we load the cached token
+  // async and only mount the player after we have it.
+  const [authToken, setAuthToken] = useState<string | null>(null);
+  useEffect(() => {
+    AsyncStorage.getItem("medlib_auth_token").then(setAuthToken).catch(() => {});
+  }, []);
+  const source = authToken
+    ? {
+        uri: `${API_BASE_URL}/files/${fileId}/download`,
+        headers: { Authorization: `Bearer ${authToken}` },
+      }
+    : null;
+  const player = useVideoPlayer(source, (p) => {
     p.timeUpdateEventInterval = 1;
   });
   const seek = useCallback(
