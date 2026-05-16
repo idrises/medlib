@@ -23,15 +23,24 @@ import { useColors } from "@/hooks/useColors";
 import { API_BASE_URL } from "@/services/api";
 import {
   type FileSubStatus,
+  MediaTranscriptResponse,
   UserFileDto,
   ZipInventoryEntry,
   ZipInventoryResponse,
   deleteUserFile,
   getFilePage,
+  getMediaTranscript,
   getUserFile,
   getZipInventory,
   listFilePages,
 } from "@/services/filesApi";
+
+const MEDIA_AUDIO_EXTS = new Set(["mp3", "wav", "m4a"]);
+const MEDIA_VIDEO_EXTS = new Set(["mp4", "mov", "webm", "mkv", "m4v"]);
+function isMediaExt(ext: string | null | undefined): boolean {
+  const e = (ext ?? "").toLowerCase();
+  return MEDIA_AUDIO_EXTS.has(e) || MEDIA_VIDEO_EXTS.has(e);
+}
 
 function formatBytes(n: number): string {
   if (!n || n < 1024) return `${n} B`;
@@ -57,6 +66,10 @@ export default function FileDetailScreen() {
   // loading / not applicable; mobile only fetches when ext === "zip".
   const [zipInventory, setZipInventory] =
     useState<ZipInventoryResponse | null>(null);
+  // Task #162 — Media (audio + video) transcript panel. Fetched only
+  // when ext is in MEDIA_*_EXTS. `null` while loading / N/A.
+  const [transcript, setTranscript] =
+    useState<MediaTranscriptResponse | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -76,6 +89,19 @@ export default function FileDetailScreen() {
       // (file isn't a zip or has no inventory yet) just hides the
       // section; other failures hide it too rather than blocking the
       // detail screen.
+      // Task #162 — fetch the Whisper transcript for any media upload.
+      // 404 / network errors silently hide the panel; the file detail
+      // screen still renders.
+      if (isMediaExt(f.extension)) {
+        try {
+          const t = await getMediaTranscript(fileId);
+          setTranscript(t);
+        } catch {
+          setTranscript(null);
+        }
+      } else {
+        setTranscript(null);
+      }
       if ((f.extension ?? "").toLowerCase() === "zip") {
         try {
           const inv = await getZipInventory(fileId);
@@ -268,6 +294,13 @@ export default function FileDetailScreen() {
 
           {zipInventory && zipInventory.entries.length > 0 ? (
             <ZipChildGrid inventory={zipInventory} colors={colors} />
+          ) : null}
+
+          {transcript &&
+          transcript.ok &&
+          transcript.segments &&
+          transcript.segments.length > 0 ? (
+            <MediaTranscriptPanel transcript={transcript} colors={colors} />
           ) : null}
 
           {pageCount > 0 ? (
@@ -644,6 +677,74 @@ function chipPalette(
         border: colors.border,
       };
   }
+}
+
+/**
+ * Task #162 — Whisper transcript panel. Renders one row per segment
+ * (timestamp + text). Tap a row to copy the timestamp into the
+ * clipboard — full audio/video playback with seek lives behind the
+ * "Dosyayı aç / paylaş" button in the existing share-sheet flow so we
+ * stay within the OTA layer (no native module additions).
+ */
+function MediaTranscriptPanel({
+  transcript,
+  colors,
+}: {
+  transcript: MediaTranscriptResponse;
+  colors: ReturnType<typeof useColors>;
+}) {
+  const segs = transcript.segments ?? [];
+  const totalSec = transcript.durationSec ?? 0;
+  const mm = Math.floor(totalSec / 60);
+  const ss = Math.round(totalSec % 60);
+  return (
+    <View style={{ marginTop: 18 }}>
+      <Text style={[styles.galleryTitle, { color: colors.foreground }]}>
+        Transkript ({segs.length})
+      </Text>
+      <Text style={[styles.gallerySub, { color: colors.mutedForeground }]}>
+        {`Süre ~${mm}:${String(ss).padStart(2, "0")} · Whisper`}
+      </Text>
+      <View style={{ marginTop: 10, gap: 6, maxHeight: 360 }}>
+        <ScrollView nestedScrollEnabled showsVerticalScrollIndicator>
+          {segs.slice(0, 200).map((s) => (
+            <View
+              key={`seg-${s.idx}`}
+              style={[
+                styles.zipRow,
+                { borderColor: colors.border, alignItems: "flex-start" },
+              ]}
+            >
+              <Text
+                style={{
+                  color: colors.mutedForeground,
+                  fontVariant: ["tabular-nums"],
+                  width: 56,
+                  fontSize: 12,
+                }}
+              >
+                {s.timestamp}
+              </Text>
+              <Text style={{ color: colors.foreground, flex: 1, fontSize: 13 }}>
+                {s.text}
+              </Text>
+            </View>
+          ))}
+          {segs.length > 200 ? (
+            <Text
+              style={{
+                color: colors.mutedForeground,
+                fontSize: 12,
+                paddingVertical: 6,
+              }}
+            >
+              +{segs.length - 200} segment daha gösterilmedi.
+            </Text>
+          ) : null}
+        </ScrollView>
+      </View>
+    </View>
+  );
 }
 
 const styles = StyleSheet.create({
