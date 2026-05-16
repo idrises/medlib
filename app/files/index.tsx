@@ -60,6 +60,26 @@ function formatDate(iso: string): string {
 }
 
 /**
+ * Task #145 — Türkçe relative time for the row's most recent state
+ * change. Falls back to a plain date for anything older than ~30 days
+ * so the meta row stays informative for old files.
+ */
+function formatRelativeTr(iso: string | null | undefined): string {
+  if (!iso) return "";
+  const ts = new Date(iso).getTime();
+  if (Number.isNaN(ts)) return "";
+  const diffSec = Math.max(0, Math.round((Date.now() - ts) / 1000));
+  if (diffSec < 45) return "az önce";
+  const diffMin = Math.round(diffSec / 60);
+  if (diffMin < 60) return `${diffMin} dk önce`;
+  const diffHr = Math.round(diffMin / 60);
+  if (diffHr < 24) return `${diffHr} sa önce`;
+  const diffDay = Math.round(diffHr / 24);
+  if (diffDay < 30) return `${diffDay} gün önce`;
+  return formatDate(iso);
+}
+
+/**
  * Task #145 — derive the discriminated state from the server DTO. New
  * server builds set `stateKind` directly; while OTA is rolling out we
  * fall back to the legacy `status` string so the chip never goes blank.
@@ -376,7 +396,7 @@ export default function FilesScreen() {
             ) : null}
             <Text style={[styles.rowMetaText, { color: colors.mutedForeground }]}>·</Text>
             <Text style={[styles.rowMetaText, { color: colors.mutedForeground }]}>
-              {formatDate(item.uploadedAt)}
+              {formatRelativeTr(item.statusChangedAt ?? item.uploadedAt)}
             </Text>
           </View>
           <View style={styles.chipRow}>
