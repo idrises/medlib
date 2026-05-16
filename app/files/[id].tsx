@@ -22,6 +22,7 @@ import PagePreviewModal from "@/components/PagePreviewModal";
 import { useColors } from "@/hooks/useColors";
 import { API_BASE_URL } from "@/services/api";
 import {
+  type FileSubStatus,
   UserFileDto,
   deleteUserFile,
   getFilePage,
@@ -220,6 +221,19 @@ export default function FileDetailScreen() {
               colors={colors}
             />
           ) : null}
+
+          {/* Task #153 — per-capability sub-status mini chips. Older
+              servers don't return `subStatuses`; in that case we hide
+              the row entirely so the screen looks identical to before. */}
+          {file.subStatuses ? (
+            <View style={styles.chipsRow}>
+              <SubStatusChip label="Metin" v={file.subStatuses.text} colors={colors} />
+              <SubStatusChip label="Sayfa" v={file.subStatuses.render} colors={colors} />
+              <SubStatusChip label="OCR" v={file.subStatuses.ocr} colors={colors} />
+              <SubStatusChip label="Tablo" v={file.subStatuses.table} colors={colors} />
+              <SubStatusChip label="Şekil" v={file.subStatuses.figure} colors={colors} />
+            </View>
+          ) : null}
           <InfoRow
             label="Yüklenme"
             value={new Date(file.uploadedAt).toLocaleString("tr-TR")}
@@ -400,8 +414,99 @@ function InfoRow({
   );
 }
 
+/**
+ * Task #153 — render one sub-status as a small coloured chip. NULL
+ * (legacy/unknown) is intentionally shown as a neutral "—" pill rather
+ * than hidden so the user can see *which* axis we don't know about
+ * yet (vs. an axis that's not_supported for this MIME type).
+ */
+function SubStatusChip({
+  label,
+  v,
+  colors,
+}: {
+  label: string;
+  v: FileSubStatus | null | undefined;
+  colors: ReturnType<typeof useColors>;
+}) {
+  const palette = chipPalette(v ?? null, colors);
+  return (
+    <View
+      style={[
+        styles.chip,
+        { backgroundColor: palette.bg, borderColor: palette.border },
+      ]}
+    >
+      <Text style={[styles.chipLabel, { color: palette.fg }]}>{label}</Text>
+      <Text style={[styles.chipValue, { color: palette.fg }]}>
+        {chipShortValue(v ?? null)}
+      </Text>
+    </View>
+  );
+}
+
+function chipShortValue(v: FileSubStatus | null): string {
+  switch (v) {
+    case "ok":
+      return "✓";
+    case "partial":
+      return "~";
+    case "failed":
+      return "✕";
+    case "pending":
+      return "…";
+    case "not_supported":
+      return "n/a";
+    case "not_needed":
+      return "—";
+    default:
+      return "?";
+  }
+}
+
+function chipPalette(
+  v: FileSubStatus | null,
+  colors: ReturnType<typeof useColors>,
+): { bg: string; fg: string; border: string } {
+  switch (v) {
+    case "ok":
+      return { bg: "#16a34a22", fg: "#15803d", border: "#16a34a55" };
+    case "partial":
+      return { bg: "#ca8a0422", fg: "#a16207", border: "#ca8a0455" };
+    case "failed":
+      return { bg: "#dc262622", fg: "#b91c1c", border: "#dc262655" };
+    case "pending":
+      return { bg: colors.muted, fg: colors.foreground, border: colors.border };
+    case "not_supported":
+    case "not_needed":
+    default:
+      return {
+        bg: colors.muted,
+        fg: colors.mutedForeground,
+        border: colors.border,
+      };
+  }
+}
+
 const styles = StyleSheet.create({
   container: { flex: 1 },
+  chipsRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 6,
+    paddingVertical: 10,
+  },
+  chip: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 999,
+    borderWidth: StyleSheet.hairlineWidth,
+  },
+  chipLabel: { fontSize: 11, fontFamily: "Inter_600SemiBold" },
+  chipValue: { fontSize: 11, fontFamily: "Inter_500Medium" },
   header: {
     paddingHorizontal: 16,
     paddingBottom: 10,
