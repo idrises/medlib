@@ -3,7 +3,6 @@ import * as Clipboard from "expo-clipboard";
 import React, { useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
-  Alert,
   Modal,
   Pressable,
   ScrollView,
@@ -22,6 +21,11 @@ interface MessageActionBarProps {
   rating: number | null;
   onRate: (newRating: 1 | -1) => void;
   disabled?: boolean;
+  isSaved?: boolean;
+  canSave?: boolean;
+  onToggleSave?: () => void;
+  onSendFeedback?: () => void;
+  onToast?: (message: string, tone?: "success" | "error" | "info") => void;
 }
 
 export default function MessageActionBar({
@@ -30,6 +34,11 @@ export default function MessageActionBar({
   rating,
   onRate,
   disabled,
+  isSaved = false,
+  canSave = false,
+  onToggleSave,
+  onSendFeedback,
+  onToast,
 }: MessageActionBarProps) {
   const colors = useColors();
   const speechState = useSpeechState(messageId);
@@ -56,6 +65,7 @@ export default function MessageActionBar({
     setCopied(true);
     if (copiedTimer.current) clearTimeout(copiedTimer.current);
     copiedTimer.current = setTimeout(() => setCopied(false), 1500);
+    onToast?.("Kopyalandı", "success");
   };
 
   const handleSpeak = () => {
@@ -72,6 +82,16 @@ export default function MessageActionBar({
     } catch {
       // user cancelled
     }
+  };
+
+  const handleToggleSave = () => {
+    if (!onToggleSave || !canSave) return;
+    onToggleSave();
+  };
+
+  const handleSendFeedback = () => {
+    if (!onSendFeedback) return;
+    onSendFeedback();
   };
 
   const iconColor = colors.mutedForeground;
@@ -160,7 +180,10 @@ export default function MessageActionBar({
           setMoreOpen(false);
           setTimeout(() => setRawOpen(true), 250);
         }}
-        onReport={() => Alert.alert("Mesajı bildir", "Bu özellik yakında eklenecek. Şimdilik 👎 ile geri bildirim verebilirsin.")}
+        onToggleSave={handleToggleSave}
+        onSendFeedback={handleSendFeedback}
+        isSaved={isSaved}
+        canSave={canSave}
       />
 
       <Modal visible={rawOpen} transparent animationType="fade" onRequestClose={() => setRawOpen(false)}>
@@ -184,6 +207,7 @@ export default function MessageActionBar({
                 setRawCopied(true);
                 if (rawCopiedTimer.current) clearTimeout(rawCopiedTimer.current);
                 rawCopiedTimer.current = setTimeout(() => setRawCopied(false), 1500);
+                onToast?.("Kopyalandı", "success");
               }}
               style={({ pressed }) => [
                 styles.rawCopyBtn,
