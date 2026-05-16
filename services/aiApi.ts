@@ -95,6 +95,7 @@ export interface AiMessage {
   content: string;
   createdAt?: string;
   rating?: number | null;
+  saved?: boolean;
 }
 
 export async function postAiFeedback(messageId: number, rating: 1 | -1, comment?: string): Promise<void> {
@@ -113,6 +114,39 @@ export async function deleteAiFeedback(messageId: number): Promise<void> {
     method: "DELETE",
     headers,
   });
+}
+
+export async function saveAiMessage(messageId: number): Promise<void> {
+  const headers = await authHeaders();
+  const res = await fetch(`${API_BASE_URL}/openai/messages/${messageId}/save`, {
+    method: "POST",
+    headers,
+  });
+  if (!res.ok) throw new Error(`${res.status}`);
+}
+
+export async function unsaveAiMessage(messageId: number): Promise<void> {
+  const headers = await authHeaders();
+  const res = await fetch(`${API_BASE_URL}/openai/messages/${messageId}/save`, {
+    method: "DELETE",
+    headers,
+  });
+  if (!res.ok) throw new Error(`${res.status}`);
+}
+
+export interface SavedAiMessage {
+  messageId: number;
+  conversationId: number;
+  content: string;
+  savedAt: string;
+  createdAt: string;
+}
+
+export async function listSavedAiMessages(): Promise<SavedAiMessage[]> {
+  const headers = await authHeaders();
+  const res = await fetch(`${API_BASE_URL}/openai/messages/saved`, { headers });
+  if (!res.ok) throw new Error(`${res.status}`);
+  return res.json() as Promise<SavedAiMessage[]>;
 }
 
 export type AiAttachment =
