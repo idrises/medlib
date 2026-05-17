@@ -1520,17 +1520,9 @@ export default function AiChatScreen() {
             <Feather name="menu" size={22} color={colors.foreground} />
           </Pressable>
         ) : (
-          <Pressable
-            onPress={() => {
-              if (router.canGoBack()) router.back();
-              else router.replace("/ai-chat/new" as never);
-            }}
-            hitSlop={8}
-            style={({ pressed }) => [styles.backBtn, { opacity: pressed ? 0.5 : 1 }]}
-            accessibilityLabel="Geri"
-          >
-            <Feather name="arrow-left" size={22} color={colors.foreground} />
-          </Pressable>
+          // Existing chat: only the left back arrow is needed. Spacer keeps the
+          // title visually centered (matches the 22+4*2=30px left button width).
+          <View style={{ width: 30 }} />
         )}
       </View>
 
