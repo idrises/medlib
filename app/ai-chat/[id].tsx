@@ -865,7 +865,18 @@ export default function AiChatScreen() {
 
   const handleSend = useCallback(async () => {
     const text = input.trim();
-    if ((!text && pendingAttachments.length === 0) || isStreaming || isProcessingVoice) return;
+    if ((!text && pendingAttachments.length === 0) || isProcessingVoice) return;
+
+    // ChatGPT-style: pressing send while a previous response is streaming
+    // aborts the current stream first, then sends the new turn. The cleanup
+    // ref points at the AbortController returned by streamAiMessage.
+    if (isStreaming) {
+      try { cleanupRef.current?.(); } catch {}
+      cleanupRef.current = null;
+      setIsStreaming(false);
+      setShowTyping(false);
+      setActiveTools([]);
+    }
 
     // Block sending while any pending file is still uploading — otherwise
     // the user could fire off a chat that references a fileId the server
@@ -1635,7 +1646,7 @@ export default function AiChatScreen() {
             <Pressable
               style={({ pressed }) => [styles.plusBtn, { opacity: pressed ? 0.7 : 1 }]}
               onPress={() => setShowAttachMenu(prev => !prev)}
-              disabled={isStreaming || isProcessingVoice || isRecording}
+              disabled={isProcessingVoice || isRecording}
               testID="attach-btn"
             >
               <Feather name="plus" size={20} color={colors.foreground} />
@@ -1645,34 +1656,45 @@ export default function AiChatScreen() {
               style={styles.input}
               value={input}
               onChangeText={setInput}
-              placeholder="Bir şey sor…"
+              placeholder={isStreaming ? "Sıradaki soru… (gönderince mevcut cevap durur)" : "Bir şey sor…"}
               placeholderTextColor={colors.mutedForeground}
               multiline
               blurOnSubmit={false}
               returnKeyType="send"
               onSubmitEditing={handleSend}
-              editable={!isStreaming && !isProcessingVoice && !isRecording}
+              editable={!isProcessingVoice && !isRecording}
               testID="chat-input"
             />
-            {canSend ? (
+            {isStreaming ? (
+              // ChatGPT-style stop button: aborts the in-flight stream and
+              // any running tool call. The user can keep typing the next
+              // question in the input above; pressing send while streaming
+              // will also auto-abort the current run and start the next one.
               <Pressable
-                style={({ pressed }) => [
-                  styles.sendBtn,
-                  isStreaming && styles.sendBtnDisabled,
-                  { opacity: pressed ? 0.8 : 1 },
-                ]}
+                style={({ pressed }) => [styles.sendBtn, { opacity: pressed ? 0.8 : 1 }]}
+                onPress={() => {
+                  try { cleanupRef.current?.(); } catch {}
+                  cleanupRef.current = null;
+                  setIsStreaming(false);
+                  setShowTyping(false);
+                  setActiveTools([]);
+                }}
+                testID="stop-btn"
+                accessibilityLabel="Durdur"
+              >
+                <Feather name="square" size={16} color="#fff" />
+              </Pressable>
+            ) : canSend ? (
+              <Pressable
+                style={({ pressed }) => [styles.sendBtn, { opacity: pressed ? 0.8 : 1 }]}
                 onPress={() => {
                   handleSend();
                   inputRef.current?.focus();
                 }}
-                disabled={!canSend || isStreaming}
+                disabled={!canSend}
                 testID="send-btn"
               >
-                {isStreaming ? (
-                  <ActivityIndicator size="small" color="#fff" />
-                ) : (
-                  <Feather name="send" size={18} color="#fff" />
-                )}
+                <Feather name="send" size={18} color="#fff" />
               </Pressable>
             ) : (
               <Pressable
