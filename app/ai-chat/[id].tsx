@@ -1542,6 +1542,10 @@ export default function AiChatScreen() {
             keyboardDismissMode="interactive"
             keyboardShouldPersistTaps="handled"
             scrollEnabled={!!messages.length}
+            maintainVisibleContentPosition={{
+              minIndexForVisible: 1,
+              autoscrollToTopThreshold: 80,
+            }}
           />
         )}
 
