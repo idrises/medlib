@@ -19,7 +19,12 @@ import { useColors } from "@/hooks/useColors";
 import AiRichBlock, { type RichBlock } from "@/components/AiRichBlock";
 import MarkdownText from "@/components/MarkdownText";
 import { cleanTranscript, isHallucinatedTranscript } from "@/services/transcriptFilter";
-import { shouldCreateRealtimeResponse } from "@/services/realtimeNoResponseGate";
+import {
+  classifyTranscriptIntent,
+  createSessionGateState,
+  shouldCreateResponse,
+  type SessionGateState,
+} from "@/services/realtimeNoResponseGate";
 import {
   appendVoiceMessage,
   createRealtimeSession,
@@ -210,6 +215,7 @@ export default function AiRealtimeScreen() {
   const aiSpeakingRef = useRef(false);
   const pendingMsgsRef = useRef<Array<{ role: "user" | "assistant"; content: string }>>([]);
   const savedUserHashesRef = useRef<Set<string>>(new Set());
+  const sessionGateRef = useRef<SessionGateState>(createSessionGateState());
   const creatingConvRef = useRef(false);
 
   const attachServerId = useCallback((role: "user" | "assistant", contentMatch: string, id: number) => {
@@ -367,22 +373,29 @@ export default function AiRealtimeScreen() {
       }
     } else if (type === "conversation.item.input_audio_transcription.completed") {
       const raw = ev.transcript as string;
-      const cleaned = cleanTranscript(raw ?? "");
-      if (cleaned && !isHallucinatedTranscript(cleaned)) {
+      const preCleaned = cleanTranscript(raw ?? "");
+      if (preCleaned && !isHallucinatedTranscript(preCleaned)) {
+        // Backend session has turn_detection.create_response=false, so the
+        // model NEVER auto-responds. The classifier decides per transcript
+        // whether to (a) append + persist as a user message and (b) trigger
+        // response.create. Ignored transcripts (ambient subtitles, news,
+        // ads, foreign-language fragments, short fillers) leave the
+        // conversation untouched.
+        const decision = classifyTranscriptIntent(preCleaned, sessionGateRef.current);
+        if (!shouldCreateResponse(decision)) {
+          if (__DEV__) {
+            console.log("[realtime gate] ignore:", decision.reason, "::", decision.cleanedTranscript);
+          }
+          return;
+        }
+        const cleaned = decision.cleanedTranscript;
         setTranscript((prev) => [...prev, { id: genId(), kind: "text", role: "user", text: cleaned }]);
         const itemId = String(ev.item_id ?? `${cleaned.length}:${cleaned.slice(0, 24)}`);
         if (!savedUserHashesRef.current.has(itemId)) {
           savedUserHashesRef.current.add(itemId);
           persistMsg("user", cleaned);
         }
-        // Backend session has turn_detection.create_response=false, so we must
-        // explicitly trigger the assistant response here. The gate adds a
-        // second filter (STOP commands like "sus/bekle", media subtitles,
-        // too-short non-task utterances) so the model stays silent on noise.
-        const gate = shouldCreateRealtimeResponse(cleaned);
-        if (gate.ok) {
-          sendDataChannel({ type: "response.create" });
-        }
+        sendDataChannel({ type: "response.create" });
       }
     } else if (type === "response.audio_transcript.delta") {
       const respId = String(ev.response_id ?? "_");
@@ -554,8 +567,12 @@ export default function AiRealtimeScreen() {
       await pc.setLocalDescription(offer);
       if (isStale()) return;
 
+      const sessionModel =
+        (session as any)?.session?.model ||
+        (session as any)?.model ||
+        "gpt-realtime";
       const sdpRes = await fetch(
-        `https://api.openai.com/v1/realtime?model=${session.model || "gpt-4o-realtime-preview-2024-12-17"}`,
+        `https://api.openai.com/v1/realtime?model=${sessionModel}`,
         {
           method: "POST",
           headers: {
