@@ -1,8 +1,54 @@
 import { Audio } from "expo-av";
-import { cacheDirectory, writeAsStringAsync, EncodingType } from "expo-file-system/legacy";
+import {
+  cacheDirectory,
+  writeAsStringAsync,
+  EncodingType,
+  getInfoAsync,
+  makeDirectoryAsync,
+} from "expo-file-system/legacy";
 import { useEffect, useState } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { API_BASE_URL } from "./api";
+
+// Per-message audio cache. Tapping Seslendir on the same unchanged
+// message twice should play instantly the second time. Key includes the
+// message id, a content hash, voice, and model — so any edit, voice
+// swap, or model upgrade invalidates the entry naturally without us
+// having to track it.
+const CACHE_DIR = `${cacheDirectory}tts-cache/`;
+const CACHE_VOICE = "marin";
+const CACHE_MODEL = "gpt-4o-mini-tts";
+
+let cacheDirReady = false;
+async function ensureCacheDir(): Promise<void> {
+  if (cacheDirReady) return;
+  try {
+    const info = await getInfoAsync(CACHE_DIR);
+    if (!info.exists) await makeDirectoryAsync(CACHE_DIR, { intermediates: true });
+  } catch {}
+  cacheDirReady = true;
+}
+
+// djb2 — small, fast, no deps. Collisions don't corrupt anything: a
+// collision just means a wrong cached audio plays for a different
+// message with identical hash, which is acceptable here (and includes
+// messageId in the key anyway, narrowing the namespace per message).
+function hashContent(text: string): string {
+  let h = 5381 >>> 0;
+  for (let i = 0; i < text.length; i++) {
+    h = (((h << 5) + h) ^ text.charCodeAt(i)) >>> 0;
+  }
+  return h.toString(36);
+}
+
+function sanitiseForPath(s: string): string {
+  return s.replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 64);
+}
+
+function cachePathFor(messageId: string, text: string): string {
+  const key = `${sanitiseForPath(messageId)}-${hashContent(text)}-${CACHE_VOICE}-${CACHE_MODEL}`;
+  return `${CACHE_DIR}${key}.mp3`;
+}
 
 export type SpeechState = "idle" | "loading" | "playing";
 
@@ -93,6 +139,7 @@ async function drainResponseToBase64(res: Response, signal: AbortSignal): Promis
 async function fetchStreamingTtsToFile(
   my: number,
   text: string,
+  destPath: string,
   token: string | null,
   signal: AbortSignal,
 ): Promise<string | null> {
@@ -103,7 +150,7 @@ async function fetchStreamingTtsToFile(
         "Content-Type": "application/json",
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
       },
-      body: JSON.stringify({ text: text.slice(0, 4000) }),
+      body: JSON.stringify({ text: text.slice(0, 4000), voice: CACHE_VOICE }),
       signal,
     });
     if (my !== reqId) return null;
@@ -111,10 +158,9 @@ async function fetchStreamingTtsToFile(
     const b64 = await drainResponseToBase64(res, signal);
     if (my !== reqId) return null;
     if (!b64) return null;
-    const path = `${cacheDirectory}tts-${my}.mp3`;
-    await writeAsStringAsync(path, b64, { encoding: EncodingType.Base64 });
+    await writeAsStringAsync(destPath, b64, { encoding: EncodingType.Base64 });
     if (my !== reqId) return null;
-    return path;
+    return destPath;
   } catch (err) {
     // Re-throw aborts so callers can distinguish user-cancel from
     // unrelated transport failure.
@@ -126,6 +172,7 @@ async function fetchStreamingTtsToFile(
 async function fetchLegacyTtsToFile(
   my: number,
   text: string,
+  destPath: string,
   token: string | null,
   signal: AbortSignal,
 ): Promise<string | null> {
@@ -135,7 +182,7 @@ async function fetchLegacyTtsToFile(
       "Content-Type": "application/json",
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
     },
-    body: JSON.stringify({ text: text.slice(0, 4000) }),
+    body: JSON.stringify({ text: text.slice(0, 4000), voice: CACHE_VOICE }),
     signal,
   });
   if (my !== reqId) return null;
@@ -144,10 +191,9 @@ async function fetchLegacyTtsToFile(
   if (my !== reqId) return null;
   const b64 = String(json.audio || "");
   if (!b64) throw new Error("empty audio");
-  const path = `${cacheDirectory}tts-${my}.mp3`;
-  await writeAsStringAsync(path, b64, { encoding: EncodingType.Base64 });
+  await writeAsStringAsync(destPath, b64, { encoding: EncodingType.Base64 });
   if (my !== reqId) return null;
-  return path;
+  return destPath;
 }
 
 export async function speak(id: string, text: string): Promise<void> {
@@ -163,22 +209,32 @@ export async function speak(id: string, text: string): Promise<void> {
 
   let createdSound: Audio.Sound | null = null;
   try {
-    const token = await getToken();
+    await ensureCacheDir();
+    const cachePath = cachePathFor(id, text);
 
+    // Cache hit — replay is instant, skip the network entirely.
     let path: string | null = null;
     try {
-      path = await fetchStreamingTtsToFile(my, text, token, abort.signal);
-    } catch (err) {
-      if ((err as any)?.name === "AbortError") return; // user stopped
-      path = null;
-    }
-    if (my !== reqId) return;
+      const info = await getInfoAsync(cachePath);
+      if (info.exists && (info.size ?? 0) > 0) path = cachePath;
+    } catch {}
+
     if (!path) {
+      const token = await getToken();
       try {
-        path = await fetchLegacyTtsToFile(my, text, token, abort.signal);
+        path = await fetchStreamingTtsToFile(my, text, cachePath, token, abort.signal);
       } catch (err) {
         if ((err as any)?.name === "AbortError") return;
-        throw err;
+        path = null;
+      }
+      if (my !== reqId) return;
+      if (!path) {
+        try {
+          path = await fetchLegacyTtsToFile(my, text, cachePath, token, abort.signal);
+        } catch (err) {
+          if ((err as any)?.name === "AbortError") return;
+          throw err;
+        }
       }
     }
     if (my !== reqId || !path) return;
