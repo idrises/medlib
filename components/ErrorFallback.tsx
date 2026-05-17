@@ -50,31 +50,37 @@ export function ErrorFallback({ error, resetError }: ErrorFallbackProps) {
 
   return (
     <View style={[styles.container, { backgroundColor: colors.background }]}>
-      {__DEV__ ? (
-        <Pressable
-          onPress={() => setIsModalVisible(true)}
-          accessibilityLabel="View error details"
-          accessibilityRole="button"
-          style={({ pressed }) => [
-            styles.topButton,
-            {
-              top: insets.top + 16,
-              backgroundColor: colors.card,
-              opacity: pressed ? 0.8 : 1,
-            },
-          ]}
-        >
-          <Feather name="alert-circle" size={20} color={colors.foreground} />
-        </Pressable>
-      ) : null}
+      <Pressable
+        onPress={() => setIsModalVisible(true)}
+        accessibilityLabel="Hata detaylarını göster"
+        accessibilityRole="button"
+        style={({ pressed }) => [
+          styles.topButton,
+          {
+            top: insets.top + 16,
+            backgroundColor: colors.card,
+            opacity: pressed ? 0.8 : 1,
+          },
+        ]}
+      >
+        <Feather name="alert-circle" size={20} color={colors.foreground} />
+      </Pressable>
 
       <View style={styles.content}>
         <Text style={[styles.title, { color: colors.foreground }]}>
-          Something went wrong
+          Bir hata oluştu
         </Text>
 
         <Text style={[styles.message, { color: colors.mutedForeground }]}>
-          Please reload the app to continue.
+          Devam etmek için uygulamayı yeniden başlatın.
+        </Text>
+
+        <Text
+          style={[styles.errorPreview, { color: colors.mutedForeground }]}
+          numberOfLines={3}
+          selectable
+        >
+          {error?.message ?? "Bilinmeyen hata"}
         </Text>
 
         <Pressable
@@ -94,13 +100,24 @@ export function ErrorFallback({ error, resetError }: ErrorFallbackProps) {
               { color: colors.primaryForeground },
             ]}
           >
-            Try Again
+            Yeniden Dene
+          </Text>
+        </Pressable>
+
+        <Pressable
+          onPress={resetError}
+          style={({ pressed }) => [
+            styles.secondaryButton,
+            { opacity: pressed ? 0.6 : 1 },
+          ]}
+        >
+          <Text style={[styles.secondaryButtonText, { color: colors.mutedForeground }]}>
+            Devam et
           </Text>
         </Pressable>
       </View>
 
-      {__DEV__ ? (
-        <Modal
+      <Modal
           visible={isModalVisible}
           animationType="slide"
           transparent={true}
@@ -166,7 +183,6 @@ export function ErrorFallback({ error, resetError }: ErrorFallbackProps) {
             </View>
           </View>
         </Modal>
-      ) : null}
     </View>
   );
 }
@@ -197,6 +213,23 @@ const styles = StyleSheet.create({
     fontSize: 16,
     textAlign: "center",
     lineHeight: 24,
+  },
+  errorPreview: {
+    fontSize: 13,
+    textAlign: "center",
+    lineHeight: 18,
+    opacity: 0.8,
+    paddingHorizontal: 8,
+  },
+  secondaryButton: {
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+  },
+  secondaryButtonText: {
+    fontSize: 14,
+    fontWeight: "500",
+    textAlign: "center",
+    textDecorationLine: "underline",
   },
   topButton: {
     position: "absolute",
