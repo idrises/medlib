@@ -495,14 +495,22 @@ export default function AiRealtimeScreen() {
       });
       pcRef.current = pc;
 
+      // Listener captures `myAttempt` so events from a previous PC (which
+      // we just closed in cleanup() before reconnecting) cannot flip the
+      // new attempt's status. "disconnected" is transient on iOS WebRTC
+      // (audio-session reconfig, network blip) — only "failed" is fatal.
+      // "closed" fires on every cleanup() and must NEVER surface as a
+      // user-facing error.
       pc.addEventListener?.("connectionstatechange", () => {
+        if (isStale()) return;
         const s = pc.connectionState;
-        if (s === "failed" || s === "disconnected" || s === "closed") {
+        if (s === "failed") {
           setStatus("error");
           setErrorMsg("Bağlantı kesildi");
         } else if (s === "connected") {
           setStatus("connected");
         }
+        // "disconnected" and "closed" intentionally ignored — see comment above.
       });
 
       pc.addEventListener?.("track", (event: any) => {
