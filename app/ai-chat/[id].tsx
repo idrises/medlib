@@ -1478,14 +1478,28 @@ export default function AiChatScreen() {
             ) : null}
           </View>
         </View>
-        <Pressable
-          onPress={() => setShowMenuDrawer(true)}
-          hitSlop={8}
-          style={({ pressed }) => [styles.backBtn, { opacity: pressed ? 0.5 : 1 }]}
-          accessibilityLabel="Menü"
-        >
-          <Feather name="menu" size={22} color={colors.foreground} />
-        </Pressable>
+        {isNew ? (
+          <Pressable
+            onPress={() => setShowMenuDrawer(true)}
+            hitSlop={8}
+            style={({ pressed }) => [styles.backBtn, { opacity: pressed ? 0.5 : 1 }]}
+            accessibilityLabel="Menü"
+          >
+            <Feather name="menu" size={22} color={colors.foreground} />
+          </Pressable>
+        ) : (
+          <Pressable
+            onPress={() => {
+              if (router.canGoBack()) router.back();
+              else router.replace("/ai-chat/new" as never);
+            }}
+            hitSlop={8}
+            style={({ pressed }) => [styles.backBtn, { opacity: pressed ? 0.5 : 1 }]}
+            accessibilityLabel="Geri"
+          >
+            <Feather name="arrow-left" size={22} color={colors.foreground} />
+          </Pressable>
+        )}
       </View>
 
       {voiceToast && (
@@ -2085,7 +2099,10 @@ export default function AiChatScreen() {
                           return;
                         }
                         setShowMenuDrawer(false);
-                        router.replace(`/ai-chat/${c.id}` as never);
+                        // push (not replace) so the back gesture returns
+                        // to the "first" /ai-chat/new screen instead of
+                        // exiting the AI area entirely.
+                        router.push(`/ai-chat/${c.id}` as never);
                       }}
                       onLongPress={() => handleDeleteDrawerConv(c)}
                       style={({ pressed }) => ({
