@@ -1419,16 +1419,6 @@ export default function AiChatScreen() {
         >
           <Feather name="arrow-left" size={22} color={colors.foreground} />
         </Pressable>
-        <Pressable
-          onPress={() => setShowMenuDrawer(true)}
-          hitSlop={8}
-          style={({ pressed }) => [
-            styles.backBtn,
-            { opacity: pressed ? 0.5 : 1, marginLeft: -4, marginRight: 2 },
-          ]}
-        >
-          <Feather name="menu" size={22} color={colors.foreground} />
-        </Pressable>
         <View style={styles.headerTitleBlock}>
           <Text style={styles.headerTitle} numberOfLines={1}>
             {convTitle}
@@ -1478,12 +1468,12 @@ export default function AiChatScreen() {
           </View>
         </View>
         <Pressable
-          onPress={startNewChat}
+          onPress={() => setShowMenuDrawer(true)}
           hitSlop={8}
           style={({ pressed }) => [styles.backBtn, { opacity: pressed ? 0.5 : 1 }]}
-          accessibilityLabel="Yeni Sohbet"
+          accessibilityLabel="Menü"
         >
-          <Feather name="edit" size={22} color={colors.foreground} />
+          <Feather name="menu" size={22} color={colors.foreground} />
         </Pressable>
       </View>
 
