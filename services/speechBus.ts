@@ -157,6 +157,47 @@ async function fetchStreamingTtsToFile(
   }
 }
 
+// Mint a short-lived signed URL the OS audio player can hit directly via
+// GET. AVPlayer (iOS) / MediaPlayer (Android) under expo-av only do GET
+// and won't carry our Authorization header, so the backend mints an
+// opaque token bound to {userId, text, voice} for ~2 minutes and we hand
+// the player the resulting URL. The player then streams the MP3
+// progressively — first audio frames play long before generation is
+// complete on the server. Returns null on any non-fatal failure so the
+// caller can fall back to the file-cache or legacy base64 path.
+async function mintTtsStreamUrl(
+  my: number,
+  text: string,
+  authToken: string | null,
+  signal: AbortSignal,
+): Promise<string | null> {
+  try {
+    const res = await fetch(`${API_BASE_URL}/openai/tts/stream-token`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
+      },
+      body: JSON.stringify({ text: text.slice(0, 4000), voice: CACHE_VOICE }),
+      signal,
+    });
+    if (my !== reqId) return null;
+    if (!res.ok) return null;
+    const j = (await res.json()) as { token?: string; path?: string };
+    if (my !== reqId) return null;
+    if (!j?.token) return null;
+    const base = API_BASE_URL.replace(/\/$/, "");
+    if (j.path && j.path.startsWith("/api/")) {
+      const apiRoot = base.endsWith("/api") ? base.slice(0, -4) : base;
+      return `${apiRoot}${j.path}`;
+    }
+    return `${base}/openai/tts/stream-get?t=${encodeURIComponent(j.token)}`;
+  } catch (err) {
+    if ((err as any)?.name === "AbortError") throw err;
+    return null;
+  }
+}
+
 async function fetchLegacyTtsToFile(
   my: number,
   text: string,
@@ -201,31 +242,62 @@ export async function speak(id: string, text: string): Promise<void> {
     const cachePath = cachePathFor(id, text);
 
     // Cache hit — replay is instant, skip the network entirely.
-    let path: string | null = null;
+    let cachedPath: string | null = null;
     try {
       const info = await getInfoAsync(cachePath);
-      if (info.exists && (info.size ?? 0) > 0) path = cachePath;
+      if (info.exists && (info.size ?? 0) > 0) cachedPath = cachePath;
     } catch {}
 
-    if (!path) {
-      const token = await getToken();
+    const authToken = await getToken();
+
+    // Decide the playback source:
+    //   1. Cache hit  → local file (instant).
+    //   2. Cache miss → mint a signed URL and hand it to Audio.Sound, so
+    //      AVPlayer / MediaPlayer streams progressively (first audio
+    //      frames play before generation completes).
+    //   3. URL mint failed → fall back to the existing file-cache write
+    //      via the POST streaming endpoint.
+    //   4. That failed too → legacy base64 JSON endpoint.
+    // The sources are tried in order; only one is actually played.
+    let playbackUri: string | null = null;
+    let backgroundCacheNeeded = false;
+
+    if (cachedPath) {
+      playbackUri = cachedPath;
+    } else {
+      let url: string | null = null;
       try {
-        path = await fetchStreamingTtsToFile(my, text, cachePath, token, abort.signal);
+        url = await mintTtsStreamUrl(my, text, authToken, abort.signal);
       } catch (err) {
         if ((err as any)?.name === "AbortError") return;
-        path = null;
+        url = null;
       }
       if (my !== reqId) return;
-      if (!path) {
+      if (url) {
+        playbackUri = url;
+        backgroundCacheNeeded = true;
+      } else {
+        let path: string | null = null;
         try {
-          path = await fetchLegacyTtsToFile(my, text, cachePath, token, abort.signal);
+          path = await fetchStreamingTtsToFile(my, text, cachePath, authToken, abort.signal);
         } catch (err) {
           if ((err as any)?.name === "AbortError") return;
-          throw err;
+          path = null;
         }
+        if (my !== reqId) return;
+        if (!path) {
+          try {
+            path = await fetchLegacyTtsToFile(my, text, cachePath, authToken, abort.signal);
+          } catch (err) {
+            if ((err as any)?.name === "AbortError") return;
+            throw err;
+          }
+        }
+        if (my !== reqId || !path) return;
+        playbackUri = path;
       }
     }
-    if (my !== reqId || !path) return;
+    if (my !== reqId || !playbackUri) return;
 
     try {
       await Audio.setAudioModeAsync({
@@ -235,7 +307,40 @@ export async function speak(id: string, text: string): Promise<void> {
       });
     } catch {}
 
-    const { sound: s } = await Audio.Sound.createAsync({ uri: path }, { shouldPlay: true });
+    let s: Audio.Sound;
+    try {
+      const created = await Audio.Sound.createAsync(
+        { uri: playbackUri },
+        { shouldPlay: true, progressUpdateIntervalMillis: 500 },
+      );
+      s = created.sound;
+    } catch (urlErr) {
+      // Progressive URL playback failed (e.g. network glitch, expired
+      // token, codec issue). Fall back to the file-cache write path so
+      // the user still hears the message — just without the head-start.
+      if (!backgroundCacheNeeded) throw urlErr;
+      if (my !== reqId) return;
+      let path: string | null = null;
+      try {
+        path = await fetchStreamingTtsToFile(my, text, cachePath, authToken, abort.signal);
+      } catch (err) {
+        if ((err as any)?.name === "AbortError") return;
+        path = null;
+      }
+      if (my !== reqId) return;
+      if (!path) {
+        try {
+          path = await fetchLegacyTtsToFile(my, text, cachePath, authToken, abort.signal);
+        } catch (err) {
+          if ((err as any)?.name === "AbortError") return;
+          throw err;
+        }
+      }
+      if (my !== reqId || !path) return;
+      const created = await Audio.Sound.createAsync({ uri: path }, { shouldPlay: true });
+      s = created.sound;
+      backgroundCacheNeeded = false;
+    }
     createdSound = s;
     // The user may have pressed stop between awaits. If so, tear down
     // the freshly-created sound instead of leaking it.
@@ -256,6 +361,18 @@ export async function speak(id: string, text: string): Promise<void> {
           sound = null;
           notify();
           s.unloadAsync().catch(() => {});
+          // After progressive URL playback ends, write the audio to
+          // local cache in the background so the *next* tap on this
+          // same message is instant. Runs detached — failure is silent.
+          if (backgroundCacheNeeded) {
+            (async () => {
+              try {
+                const bgAbort = new AbortController();
+                await fetchStreamingTtsToFile(my, text, cachePath, authToken, bgAbort.signal)
+                  .catch(() => fetchLegacyTtsToFile(my, text, cachePath, authToken, bgAbort.signal));
+              } catch {}
+            })();
+          }
         }
       }
     });
