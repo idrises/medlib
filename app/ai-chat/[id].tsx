@@ -1,7 +1,8 @@
 import { Feather } from "@expo/vector-icons";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useQueryClient } from "@tanstack/react-query";
-import { useLocalSearchParams, useRouter } from "expo-router";
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 let ImagePicker: any = null;
 try { ImagePicker = require("expo-image-picker"); } catch {}
@@ -24,7 +25,10 @@ import {
 import { KeyboardAvoidingView } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
+import { useAuth } from "@/contexts/AuthContext";
 import { useColors } from "@/hooks/useColors";
+import { API_BASE_URL } from "@/services/api";
+import { hasSavedInterests, pickChatSuggestions } from "@/services/chatSuggestions";
 import {
   AiAttachment,
   AiConversation,
@@ -32,7 +36,10 @@ import {
   AiThread,
   assignConversationToThread,
   createAiConversation,
+  createAiThread,
+  deleteAiConversation,
   getAiConversation,
+  listAiConversations,
   listAiThreads,
   parseStoredContent,
   streamAiMessage,
@@ -76,12 +83,6 @@ const TOOL_LABELS: Record<string, string> = {
   generate_diagram: "Diyagram hazırlanıyor",
 };
 
-const SUGGESTED = [
-  "Kardiyovasküler araştırmaları bul",
-  "Rinoplasti anatomisini çiz",
-  "Son 5 yılın enfeksiyon oranı grafiği",
-  "Septoplasti algoritması diyagramı",
-];
 
 let msgCounter = 0;
 function genId() {
@@ -182,12 +183,13 @@ interface PendingAttachment {
 }
 
 export default function AiChatScreen() {
-  const { id, threadId: threadIdParam, prefill: prefillParam, fileId: prefillFileId, fileName: prefillFileName } = useLocalSearchParams<{
+  const { id, threadId: threadIdParam, prefill: prefillParam, fileId: prefillFileId, fileName: prefillFileName, openNewThread: openNewThreadParam } = useLocalSearchParams<{
     id: string;
     threadId?: string;
     prefill?: string;
     fileId?: string;
     fileName?: string;
+    openNewThread?: string;
   }>();
   const initialThreadId = (() => {
     if (typeof threadIdParam !== "string") return null;
@@ -214,9 +216,74 @@ export default function AiChatScreen() {
   const [conv, setConv] = useState<AiConversation | null>(null);
   const [threads, setThreads] = useState<AiThread[]>([]);
   const [showThreadModal, setShowThreadModal] = useState(false);
+  const [showNewThreadModal, setShowNewThreadModal] = useState(false);
+  const [newThreadTitle, setNewThreadTitle] = useState("");
+  const [creatingThread, setCreatingThread] = useState(false);
+  const [memories, setMemories] = useState<Array<{ key: string; value: string }>>([]);
+  const memoriesLoadedRef = useRef(false);
+  const { token } = useAuth();
   const [pendingAttachments, setPendingAttachments] = useState<PendingAttachment[]>([]);
   const [showAttachMenu, setShowAttachMenu] = useState(false);
   const [showMenuDrawer, setShowMenuDrawer] = useState(false);
+  const [drawerConvs, setDrawerConvs] = useState<AiConversation[]>([]);
+  const [drawerConvsLoading, setDrawerConvsLoading] = useState(false);
+  const [drawerQuery, setDrawerQuery] = useState("");
+  const drawerLoadedRef = useRef(false);
+
+  const loadDrawerConvs = useCallback(async () => {
+    setDrawerConvsLoading(true);
+    try {
+      const list = await listAiConversations();
+      setDrawerConvs(Array.isArray(list) ? list : []);
+    } catch {
+      setDrawerConvs([]);
+    } finally {
+      setDrawerConvsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (showMenuDrawer && !drawerLoadedRef.current) {
+      drawerLoadedRef.current = true;
+      loadDrawerConvs();
+    }
+  }, [showMenuDrawer, loadDrawerConvs]);
+
+  const handleDeleteDrawerConv = useCallback(
+    (conv: AiConversation) => {
+      Alert.alert("Sohbeti sil", `"${conv.title || "Sohbet"}" silinsin mi?`, [
+        { text: "Vazgeç", style: "cancel" },
+        {
+          text: "Sil",
+          style: "destructive",
+          onPress: async () => {
+            try {
+              await deleteAiConversation(conv.id);
+              setDrawerConvs((prev) => prev.filter((c) => c.id !== conv.id));
+              if (conv.id === convId) {
+                try {
+                  await AsyncStorage.removeItem("medlib.lastAiConversationId");
+                } catch {}
+                setShowMenuDrawer(false);
+                router.replace("/ai-chat/new" as never);
+              }
+            } catch {
+              Alert.alert("Hata", "Sohbet silinemedi");
+            }
+          },
+        },
+      ]);
+    },
+    [convId, router]
+  );
+
+  const startNewChat = useCallback(() => {
+    setShowMenuDrawer(false);
+    const tid = conv?.threadId;
+    router.replace(
+      (tid ? `/ai-chat/new?threadId=${tid}` : "/ai-chat/new") as never
+    );
+  }, [conv?.threadId, router]);
 
   const [isRecording, setIsRecording] = useState(false);
   const [isProcessingVoice, setIsProcessingVoice] = useState(false);
@@ -259,6 +326,49 @@ export default function AiChatScreen() {
     }
   }, [prefillParam]);
 
+  // Load user memory once so empty-state suggestions can personalize.
+  // No new backend route: reuses existing /openai/memory.
+  useEffect(() => {
+    if (memoriesLoadedRef.current || !token) return;
+    memoriesLoadedRef.current = true;
+    (async () => {
+      try {
+        const r = await fetch(`${API_BASE_URL}/openai/memory`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        const d = await r.json();
+        if (Array.isArray(d)) {
+          setMemories(d.map((m: { key?: string; value?: string }) => ({
+            key: String(m.key ?? ""),
+            value: String(m.value ?? ""),
+          })));
+        }
+      } catch {}
+    })();
+  }, [token]);
+
+  const emptyStateSuggestions = useMemo(() => {
+    const recentTitle = conv?.title || drawerConvs[0]?.title || null;
+    return pickChatSuggestions({
+      memories,
+      hasActiveFile: pendingAttachments.length > 0,
+      recentTitle,
+    });
+  }, [memories, pendingAttachments, conv, drawerConvs]);
+
+  const showInterestsCta = !hasSavedInterests(memories);
+
+  // Allow other surfaces (drawer "Yeni Klasör", AI entry deep link) to
+  // request the new-folder modal via ?openNewThread=1 on this route.
+  const openNewThreadHandled = useRef(false);
+  useEffect(() => {
+    if (openNewThreadHandled.current) return;
+    if (typeof openNewThreadParam === "string" && openNewThreadParam.length > 0) {
+      openNewThreadHandled.current = true;
+      setShowNewThreadModal(true);
+    }
+  }, [openNewThreadParam]);
+
   useEffect(() => {
     if (!isNew && !initializedRef.current) {
       initializedRef.current = true;
@@ -280,10 +390,32 @@ export default function AiChatScreen() {
             })
           );
         })
-        .catch(() => {})
+        .catch(() => {
+          // The stored/URL conversation ID is stale or unreachable.
+          // Drop the cached "last conversation" pointer so the AI entry
+          // redirect doesn't keep returning to a broken chat, then bail
+          // out to a fresh new-chat screen.
+          AsyncStorage.removeItem("medlib.lastAiConversationId").catch(() => {});
+          setConvId(null);
+          router.replace("/ai-chat/new" as never);
+        })
         .finally(() => setIsLoading(false));
     }
-  }, [id, isNew]);
+  }, [id, isNew, router]);
+
+  // Remember last opened conversation so the AI entry redirect can jump
+  // straight back into it (ChatGPT-style). Only persisted after the
+  // conversation has been confirmed to load from the server — that way
+  // a URL-only convId (which might be stale) is never written back.
+  useFocusEffect(
+    useCallback(() => {
+      if (!convId || !conv || conv.id !== convId) return;
+      AsyncStorage.setItem(
+        "medlib.lastAiConversationId",
+        String(convId)
+      ).catch(() => {});
+    }, [convId, conv])
+  );
 
   useEffect(() => {
     return () => {
@@ -1301,6 +1433,7 @@ export default function AiChatScreen() {
           <Text style={styles.headerTitle} numberOfLines={1}>
             {convTitle}
           </Text>
+          {/* placeholder kept; sub row below */}
           <View style={{ flexDirection: "row", alignItems: "center", marginTop: 2 }}>
             <Text style={styles.headerSub}>MedLib AI</Text>
             {!isNew && convId ? (
@@ -1344,6 +1477,14 @@ export default function AiChatScreen() {
             ) : null}
           </View>
         </View>
+        <Pressable
+          onPress={startNewChat}
+          hitSlop={8}
+          style={({ pressed }) => [styles.backBtn, { opacity: pressed ? 0.5 : 1 }]}
+          accessibilityLabel="Yeni Sohbet"
+        >
+          <Feather name="edit" size={22} color={colors.foreground} />
+        </Pressable>
       </View>
 
       {voiceToast && (
@@ -1363,51 +1504,12 @@ export default function AiChatScreen() {
             <View style={styles.emptyIcon}>
               <Feather name="cpu" size={32} color={colors.primary} />
             </View>
-            <Text style={styles.emptyTitle}>Ne öğrenmek istersin?</Text>
+            <Text style={styles.emptyTitle}>Yeni Sohbet</Text>
             <Text style={styles.emptyDesc}>
-              Tıbbi kütüphanede ara, makaleleri özetle, anatomik resim çiz, grafik veya akış şeması iste, görsel/PDF yükle.
+              MedLib AI · Tıbbi kütüphanede ara, makaleleri özetle, görsel/PDF yükle.
             </Text>
-            <Pressable
-              onPress={() => router.push("/ai-memory" as never)}
-              style={{
-                marginTop: 16,
-                marginBottom: 8,
-                paddingVertical: 12,
-                paddingHorizontal: 16,
-                borderRadius: 14,
-                backgroundColor: colors.primary + "12",
-                borderWidth: 1,
-                borderColor: colors.primary + "33",
-                flexDirection: "row",
-                alignItems: "center",
-                gap: 12,
-                alignSelf: "stretch",
-              }}
-            >
-              <View
-                style={{
-                  width: 36,
-                  height: 36,
-                  borderRadius: 18,
-                  backgroundColor: colors.primary,
-                  alignItems: "center",
-                  justifyContent: "center",
-                }}
-              >
-                <Feather name="cpu" size={18} color="#fff" />
-              </View>
-              <View style={{ flex: 1 }}>
-                <Text style={{ fontWeight: "600", fontSize: 14, color: colors.text }}>
-                  İlgi Alanlarını Ekle
-                </Text>
-                <Text style={{ fontSize: 12, color: colors.mutedForeground, marginTop: 2 }}>
-                  Uzmanlık ve ilgi alanlarını kaydet — AI sana özel öneri versin
-                </Text>
-              </View>
-              <Feather name="chevron-right" size={18} color={colors.mutedForeground} />
-            </Pressable>
-            <View style={styles.suggestions}>
-              {SUGGESTED.map((s) => (
+            <View style={[styles.suggestions, { marginTop: 16 }]}>
+              {emptyStateSuggestions.map((s) => (
                 <Pressable
                   key={s}
                   style={({ pressed }) => [styles.suggestionBtn, { opacity: pressed ? 0.7 : 1 }]}
@@ -1417,6 +1519,26 @@ export default function AiChatScreen() {
                 </Pressable>
               ))}
             </View>
+            {showInterestsCta ? (
+              <Pressable
+                onPress={() => router.push("/ai-memory" as never)}
+                style={({ pressed }) => ({
+                  marginTop: 14,
+                  paddingVertical: 8,
+                  paddingHorizontal: 12,
+                  borderRadius: 10,
+                  flexDirection: "row",
+                  alignItems: "center",
+                  gap: 6,
+                  opacity: pressed ? 0.6 : 1,
+                })}
+              >
+                <Feather name="settings" size={12} color={colors.mutedForeground} />
+                <Text style={{ fontSize: 12, color: colors.mutedForeground }}>
+                  İlgi alanlarını ekle
+                </Text>
+              </Pressable>
+            ) : null}
           </View>
         ) : (
           <FlatList
@@ -1595,6 +1717,106 @@ export default function AiChatScreen() {
       />
 
       <Modal
+        visible={showNewThreadModal}
+        transparent
+        animationType="fade"
+        onRequestClose={() => {
+          if (!creatingThread) setShowNewThreadModal(false);
+        }}
+      >
+        <View style={threadModalStyles.backdrop}>
+          <View
+            style={[
+              threadModalStyles.card,
+              { backgroundColor: colors.card, borderColor: colors.border },
+            ]}
+          >
+            <Text style={[threadModalStyles.title, { color: colors.text }]}>
+              Yeni Klasör
+            </Text>
+            <Text
+              style={[threadModalStyles.hint, { color: colors.mutedForeground }]}
+              numberOfLines={2}
+            >
+              Sohbetlerini konu başlığı altında topla.
+            </Text>
+            <TextInput
+              value={newThreadTitle}
+              onChangeText={setNewThreadTitle}
+              placeholder="Başlık (örn. Kardiyoloji)"
+              placeholderTextColor={colors.mutedForeground}
+              autoFocus
+              editable={!creatingThread}
+              style={{
+                marginTop: 12,
+                paddingHorizontal: 12,
+                paddingVertical: 10,
+                borderWidth: 1,
+                borderColor: colors.border,
+                borderRadius: 10,
+                color: colors.text,
+                fontSize: 14,
+                backgroundColor: colors.muted,
+              }}
+            />
+            <View style={{ flexDirection: "row", justifyContent: "flex-end", gap: 8, marginTop: 14 }}>
+              <Pressable
+                onPress={() => {
+                  if (creatingThread) return;
+                  setShowNewThreadModal(false);
+                  setNewThreadTitle("");
+                }}
+                style={({ pressed }) => ({
+                  paddingHorizontal: 14,
+                  paddingVertical: 10,
+                  borderRadius: 10,
+                  opacity: pressed ? 0.6 : 1,
+                })}
+              >
+                <Text style={{ color: colors.mutedForeground, fontWeight: "600" }}>Vazgeç</Text>
+              </Pressable>
+              <Pressable
+                disabled={creatingThread || newThreadTitle.trim().length === 0}
+                onPress={async () => {
+                  const title = newThreadTitle.trim();
+                  if (!title) return;
+                  setCreatingThread(true);
+                  try {
+                    const created = await createAiThread(title);
+                    setNewThreadTitle("");
+                    setShowNewThreadModal(false);
+                    // Drop user into a fresh chat inside the new folder.
+                    router.replace(`/ai-chat/new?threadId=${created.id}` as never);
+                  } catch (err: unknown) {
+                    const msg = err instanceof Error ? err.message : "Klasör oluşturulamadı";
+                    Alert.alert("Hata", msg);
+                  } finally {
+                    setCreatingThread(false);
+                  }
+                }}
+                style={({ pressed }) => ({
+                  paddingHorizontal: 14,
+                  paddingVertical: 10,
+                  borderRadius: 10,
+                  backgroundColor:
+                    creatingThread || newThreadTitle.trim().length === 0
+                      ? colors.primary + "55"
+                      : colors.primary,
+                  opacity: pressed ? 0.8 : 1,
+                })}
+              >
+                {creatingThread ? (
+                  <ActivityIndicator color="#fff" size="small" />
+                ) : (
+                  <Text style={{ color: "#fff", fontWeight: "700" }}>Oluştur</Text>
+                )}
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
         visible={showThreadModal}
         transparent
         animationType="fade"
@@ -1710,103 +1932,182 @@ export default function AiChatScreen() {
                 <Feather name="x" size={22} color={colors.mutedForeground} />
               </Pressable>
             </View>
-            {[
-              {
-                icon: "message-square" as const,
-                label: "Geçmiş Sohbetler",
-                hint: "Tüm sohbetler ve klasörler",
-                onPress: () => {
-                  setShowMenuDrawer(false);
-                  router.push("/ai-chat" as never);
-                },
-              },
-              {
-                icon: "plus-circle" as const,
-                label: conv?.threadId ? "Bu Klasörde Yeni Sohbet" : "Yeni Sohbet",
-                hint: conv?.threadId
-                  ? `"${currentThread?.title ?? "Klasör"}" altında yeni sohbet`
-                  : "Boş bir sohbet başlat",
-                onPress: () => {
-                  setShowMenuDrawer(false);
-                  if (isNew && !conv?.threadId) return;
-                  // Carry the current conversation's thread (if any) into the
-                  // new chat so the user stays in the same folder context.
-                  const tid = conv?.threadId;
-                  router.replace(
-                    (tid ? `/ai-chat/new?threadId=${tid}` : "/ai-chat/new") as never
-                  );
-                },
-              },
-              {
-                icon: "folder-plus" as const,
-                label: "Yeni Klasör",
-                hint: "Yeni bir konu başlığı oluştur",
-                onPress: () => {
-                  setShowMenuDrawer(false);
-                  router.push("/ai-chat?openNewThread=1" as never);
-                },
-              },
-              {
-                icon: "edit-3" as const,
-                label: "Bu Sohbete Başlık Ata",
-                hint: convId
-                  ? "Bir konu başlığı seç veya kaldır"
-                  : "Önce bir mesaj gönder",
-                disabled: !convId,
-                onPress: () => {
-                  setShowMenuDrawer(false);
-                  if (!convId) return;
-                  openThreadModal();
-                },
-              },
-            ].map((item) => (
-              <Pressable
-                key={item.label}
-                onPress={item.onPress}
-                disabled={item.disabled}
-                style={({ pressed }) => ({
-                  flexDirection: "row",
+            <Pressable
+              onPress={startNewChat}
+              style={({ pressed }) => ({
+                flexDirection: "row",
+                alignItems: "center",
+                gap: 10,
+                paddingHorizontal: 12,
+                paddingVertical: 12,
+                borderRadius: 12,
+                backgroundColor: pressed ? colors.primary + "33" : colors.primary + "18",
+                marginBottom: 8,
+              })}
+            >
+              <View
+                style={{
+                  width: 32,
+                  height: 32,
+                  borderRadius: 16,
+                  backgroundColor: colors.primary,
                   alignItems: "center",
-                  paddingHorizontal: 12,
-                  paddingVertical: 12,
-                  marginVertical: 2,
-                  borderRadius: 10,
-                  backgroundColor: pressed ? colors.muted : "transparent",
-                  opacity: item.disabled ? 0.45 : 1,
-                })}
+                  justifyContent: "center",
+                }}
               >
-                <View
-                  style={{
-                    width: 36,
-                    height: 36,
-                    borderRadius: 10,
-                    backgroundColor: colors.primary + "18",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    marginRight: 12,
-                  }}
-                >
-                  <Feather name={item.icon} size={18} color={colors.primary} />
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text
-                    style={{ fontSize: 14, fontWeight: "600", color: colors.text }}
-                  >
-                    {item.label}
-                  </Text>
-                  <Text
-                    style={{
-                      fontSize: 11,
-                      color: colors.mutedForeground,
-                      marginTop: 2,
-                    }}
-                    numberOfLines={1}
-                  >
-                    {item.hint}
-                  </Text>
-                </View>
+                <Feather name="plus" size={18} color="#fff" />
+              </View>
+              <Text style={{ fontSize: 14, fontWeight: "700", color: colors.text, flex: 1 }}>
+                {conv?.threadId ? "Bu Klasörde Yeni Sohbet" : "Yeni Sohbet"}
+              </Text>
+              <Feather name="edit" size={16} color={colors.primary} />
+            </Pressable>
+
+            <View
+              style={{
+                flexDirection: "row",
+                alignItems: "center",
+                gap: 8,
+                paddingHorizontal: 10,
+                paddingVertical: 8,
+                borderRadius: 10,
+                backgroundColor: colors.muted,
+                marginBottom: 8,
+              }}
+            >
+              <Feather name="search" size={14} color={colors.mutedForeground} />
+              <TextInput
+                value={drawerQuery}
+                onChangeText={setDrawerQuery}
+                placeholder="Sohbetlerde ara…"
+                placeholderTextColor={colors.mutedForeground}
+                style={{
+                  flex: 1,
+                  fontSize: 13,
+                  color: colors.text,
+                  padding: 0,
+                }}
+              />
+              {drawerQuery.length > 0 ? (
+                <Pressable onPress={() => setDrawerQuery("")} hitSlop={8}>
+                  <Feather name="x" size={14} color={colors.mutedForeground} />
+                </Pressable>
+              ) : null}
+            </View>
+
+            <View
+              style={{
+                flexDirection: "row",
+                alignItems: "center",
+                justifyContent: "space-between",
+                paddingHorizontal: 4,
+                paddingTop: 4,
+                paddingBottom: 6,
+              }}
+            >
+              <Text
+                style={{
+                  fontSize: 11,
+                  fontWeight: "700",
+                  letterSpacing: 0.6,
+                  color: colors.mutedForeground,
+                  textTransform: "uppercase",
+                }}
+              >
+                Geçmiş Sohbetler
+              </Text>
+              <Pressable
+                onPress={() => {
+                  setShowMenuDrawer(false);
+                  setShowNewThreadModal(true);
+                }}
+                hitSlop={8}
+                accessibilityLabel="Yeni Klasör"
+              >
+                <Feather name="folder-plus" size={16} color={colors.mutedForeground} />
               </Pressable>
-            ))}
+            </View>
+
+            <ScrollView style={{ flex: 1 }} contentContainerStyle={{ paddingBottom: 24 }}>
+              {drawerConvsLoading ? (
+                <View style={{ paddingVertical: 24, alignItems: "center" }}>
+                  <ActivityIndicator color={colors.primary} />
+                </View>
+              ) : (() => {
+                const q = drawerQuery.trim().toLowerCase();
+                const filtered = q
+                  ? drawerConvs.filter((c) =>
+                      (c.title || "").toLowerCase().includes(q)
+                    )
+                  : drawerConvs;
+                if (filtered.length === 0) {
+                  return (
+                    <Text
+                      style={{
+                        fontSize: 12,
+                        color: colors.mutedForeground,
+                        paddingVertical: 16,
+                        paddingHorizontal: 6,
+                        fontStyle: "italic",
+                      }}
+                    >
+                      {q ? "Sonuç yok" : "Henüz sohbet yok"}
+                    </Text>
+                  );
+                }
+                return filtered.map((c) => {
+                  const isCurrent = c.id === convId;
+                  const isVoice =
+                    typeof c.title === "string" &&
+                    c.title.startsWith("Sesli Sohbet");
+                  return (
+                    <Pressable
+                      key={c.id}
+                      onPress={() => {
+                        if (isCurrent) {
+                          setShowMenuDrawer(false);
+                          return;
+                        }
+                        setShowMenuDrawer(false);
+                        router.replace(`/ai-chat/${c.id}` as never);
+                      }}
+                      onLongPress={() => handleDeleteDrawerConv(c)}
+                      style={({ pressed }) => ({
+                        flexDirection: "row",
+                        alignItems: "center",
+                        gap: 10,
+                        paddingHorizontal: 10,
+                        paddingVertical: 10,
+                        marginVertical: 1,
+                        borderRadius: 10,
+                        backgroundColor: isCurrent
+                          ? colors.primary + "1a"
+                          : pressed
+                          ? colors.muted
+                          : "transparent",
+                      })}
+                    >
+                      <Feather
+                        name={isVoice ? "mic" : "message-square"}
+                        size={14}
+                        color={isCurrent ? colors.primary : colors.mutedForeground}
+                      />
+                      <Text
+                        numberOfLines={1}
+                        style={{
+                          flex: 1,
+                          fontSize: 13,
+                          fontWeight: isCurrent ? "700" : "500",
+                          color: isCurrent ? colors.primary : colors.text,
+                        }}
+                      >
+                        {c.title || (isVoice ? "Sesli Sohbet" : "Sohbet")}
+                      </Text>
+                    </Pressable>
+                  );
+                });
+              })()}
+            </ScrollView>
           </View>
           <Pressable
             style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.45)" }}
