@@ -11,6 +11,7 @@ try { DocumentPicker = require("expo-document-picker"); } catch {}
 import {
   ActivityIndicator,
   Alert,
+  AppState,
   FlatList,
   Image,
   Modal,
@@ -425,6 +426,23 @@ export default function AiChatScreen() {
       stopCurrentPlayback();
       voiceActiveRef.current = false;
     };
+  }, []);
+
+  // When the app goes to background iOS suspends networking; an in-flight
+  // streaming fetch then rejects from native code and (if uncaught) can
+  // crash the app on resume. Abort cleanly on background to prevent that.
+  useEffect(() => {
+    const sub = AppState.addEventListener("change", (next) => {
+      if (next === "background" || next === "inactive") {
+        try { cleanupRef.current?.(); } catch {}
+        cleanupRef.current = null;
+        try { stopCurrentPlayback(); } catch {}
+        setIsStreaming(false);
+        setShowTyping(false);
+        setActiveTools([]);
+      }
+    });
+    return () => sub.remove();
   }, []);
 
   const pickImage = useCallback(async () => {
@@ -961,7 +979,21 @@ export default function AiChatScreen() {
 
   const handleRetry = useCallback((errorMsgId: string, payload: RetryPayload) => {
     if (isStreaming || isProcessingVoice) return;
-    setMessages((prev) => prev.filter((m) => m.id !== errorMsgId));
+    // Remove the error bubble AND guarantee the user's outgoing message is
+    // present. If the user message is missing (e.g. it never made it into
+    // state, or got cleared by a previous error path), re-add it so the
+    // chat history stays intact instead of going blank.
+    setMessages((prev) => {
+      const withoutError = prev.filter((m) => m.id !== errorMsgId);
+      const lastUser = [...withoutError].reverse().find((m) => m.role === "user");
+      const matchesPayload =
+        lastUser && (lastUser.content || "").trim() === (payload.displayContent || "").trim();
+      if (matchesPayload) return withoutError;
+      return [
+        ...withoutError,
+        { id: genId(), role: "user", content: payload.displayContent, blocks: payload.userBlocks },
+      ];
+    });
     performSend(payload.text, payload.attachmentsForSend, payload.userBlocks, payload.displayContent, { addUserMessage: false });
   }, [isStreaming, isProcessingVoice, performSend]);
 
@@ -1670,7 +1702,7 @@ export default function AiChatScreen() {
               style={styles.input}
               value={input}
               onChangeText={setInput}
-              placeholder={isStreaming ? "Sıradaki soru… (gönderince mevcut cevap durur)" : "Bir şey sor…"}
+              placeholder="Bir şey sor…"
               placeholderTextColor={colors.mutedForeground}
               multiline
               blurOnSubmit={false}
