@@ -9,6 +9,11 @@ import {
 import { useEffect, useState } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { API_BASE_URL } from "./api";
+import {
+  SPEECH_CACHE_MODEL,
+  SPEECH_CACHE_VOICE,
+  speechCacheKey,
+} from "./speechCacheKey";
 
 // Per-message audio cache. Tapping Seslendir on the same unchanged
 // message twice should play instantly the second time. Key includes the
@@ -16,8 +21,8 @@ import { API_BASE_URL } from "./api";
 // swap, or model upgrade invalidates the entry naturally without us
 // having to track it.
 const CACHE_DIR = `${cacheDirectory}tts-cache/`;
-const CACHE_VOICE = "marin";
-const CACHE_MODEL = "gpt-4o-mini-tts";
+const CACHE_VOICE = SPEECH_CACHE_VOICE;
+const CACHE_MODEL = SPEECH_CACHE_MODEL;
 
 let cacheDirReady = false;
 async function ensureCacheDir(): Promise<void> {
@@ -29,25 +34,8 @@ async function ensureCacheDir(): Promise<void> {
   cacheDirReady = true;
 }
 
-// djb2 — small, fast, no deps. Collisions don't corrupt anything: a
-// collision just means a wrong cached audio plays for a different
-// message with identical hash, which is acceptable here (and includes
-// messageId in the key anyway, narrowing the namespace per message).
-function hashContent(text: string): string {
-  let h = 5381 >>> 0;
-  for (let i = 0; i < text.length; i++) {
-    h = (((h << 5) + h) ^ text.charCodeAt(i)) >>> 0;
-  }
-  return h.toString(36);
-}
-
-function sanitiseForPath(s: string): string {
-  return s.replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 64);
-}
-
 function cachePathFor(messageId: string, text: string): string {
-  const key = `${sanitiseForPath(messageId)}-${hashContent(text)}-${CACHE_VOICE}-${CACHE_MODEL}`;
-  return `${CACHE_DIR}${key}.mp3`;
+  return `${CACHE_DIR}${speechCacheKey(messageId, text, CACHE_VOICE, CACHE_MODEL)}.mp3`;
 }
 
 export type SpeechState = "idle" | "loading" | "playing";
