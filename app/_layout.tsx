@@ -92,7 +92,10 @@ function RootLayoutNav() {
         <Stack.Screen name="conversation/[conversationId]" options={{ headerShown: false }} />
         <Stack.Screen name="ai-chat/index" options={{ headerShown: false }} />
         <Stack.Screen name="ai-chat/[id]" options={{ headerShown: false }} />
-        <Stack.Screen name="ai-realtime" options={{ headerShown: false }} />
+        <Stack.Screen
+          name="ai-realtime"
+          options={{ headerShown: false, presentation: "modal", animation: "slide_from_bottom" }}
+        />
         <Stack.Screen name="files/index" options={{ headerShown: false }} />
         <Stack.Screen name="files/[id]" options={{ headerShown: false }} />
       </Stack>
