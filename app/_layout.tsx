@@ -122,7 +122,11 @@ export default function RootLayout() {
 
   return (
     <SafeAreaProvider>
-      <ErrorBoundary>
+      <ErrorBoundary
+        onError={(err, stack) => {
+          console.error("[ErrorBoundary]", err?.message, err?.stack ?? stack);
+        }}
+      >
         <QueryClientProvider client={queryClient}>
           <SettingsProvider>
             <AuthProvider>
