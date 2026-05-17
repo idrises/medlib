@@ -1,7 +1,6 @@
 import { Audio } from "expo-av";
 import { cacheDirectory, writeAsStringAsync, EncodingType } from "expo-file-system/legacy";
 import { useEffect, useState } from "react";
-import { Platform } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { API_BASE_URL } from "./api";
 
@@ -11,6 +10,7 @@ let activeId: string | null = null;
 let state: SpeechState = "idle";
 let sound: Audio.Sound | null = null;
 let reqId = 0;
+let currentAbort: AbortController | null = null;
 const listeners = new Set<() => void>();
 
 function notify() {
@@ -36,118 +36,99 @@ async function unloadCurrent() {
 
 export async function stop(): Promise<void> {
   reqId++;
+  // Cancel any in-flight TTS request so the server can stop reading
+  // bytes from OpenAI and we stop wasting bandwidth/CPU on audio we
+  // are no longer going to play.
+  if (currentAbort) {
+    try { currentAbort.abort(); } catch {}
+    currentAbort = null;
+  }
   await unloadCurrent();
   activeId = null;
   state = "idle";
   notify();
 }
 
-// Try the new server streaming endpoint first — playback starts before the
-// full MP3 is generated. expo-av's Audio.Sound can stream a remote URL with
-// custom headers on native, so we point it directly at /openai/tts/stream.
-// On web (no header support on <audio>) and on any failure path we fall
-// back to the legacy JSON base64 endpoint.
-async function tryStreamingPlayback(my: number, text: string, token: string | null): Promise<Audio.Sound | null> {
-  if (Platform.OS === "web") return null;
+// Drain a fetch Response body to a single base64 string. Works on
+// platforms whose fetch lacks `body.getReader()` (older RN shims) by
+// falling back to arrayBuffer(). Honors the AbortSignal — if the signal
+// fires mid-read we cancel the reader and bail.
+async function drainResponseToBase64(res: Response, signal: AbortSignal): Promise<string> {
+  const anyBody = (res as any).body;
+  if (anyBody && typeof anyBody.getReader === "function") {
+    const reader = anyBody.getReader();
+    const chunks: Uint8Array[] = [];
+    try {
+      while (true) {
+        if (signal.aborted) {
+          try { await reader.cancel(); } catch {}
+          throw new DOMException("Aborted", "AbortError");
+        }
+        const { value, done } = await reader.read();
+        if (done) break;
+        if (value) chunks.push(value);
+      }
+    } finally {
+      try { reader.releaseLock?.(); } catch {}
+    }
+    const merged = Buffer.concat(chunks.map(u => Buffer.from(u)));
+    return merged.toString("base64");
+  }
+  const ab = await res.arrayBuffer();
+  return Buffer.from(new Uint8Array(ab)).toString("base64");
+}
+
+// Download from the streaming endpoint. Returns the cache file path
+// containing the full MP3, or null on any non-fatal failure (caller
+// then falls back to the legacy JSON endpoint). The streaming endpoint
+// is preferred because it avoids the ~33% base64 inflation and the
+// JSON.parse cost of the legacy path, and lets the server tear down
+// the upstream OpenAI read promptly when the client aborts.
+//
+// NOTE: We do not attempt true progressive playback on native. expo-av's
+// Audio.Sound.loadAsync reads the file fully at load time and will not
+// pick up bytes appended afterwards. The win here is purely the
+// shorter end-to-end byte path; first-audio latency is dominated by
+// OpenAI generation time, not transport.
+async function fetchStreamingTtsToFile(
+  my: number,
+  text: string,
+  token: string | null,
+  signal: AbortSignal,
+): Promise<string | null> {
   try {
-    // Probe the streaming endpoint with a HEAD-like start to surface 401/404
-    // quickly. We can't do a true HEAD because the server only knows whether
-    // to issue audio after POSTing the text. Instead, kick off the full POST
-    // here from Audio.Sound itself by passing uri + headers.
-    const uri = `${API_BASE_URL}/openai/tts/stream?t=${my}`;
-    const headers: Record<string, string> = {
-      "Content-Type": "application/json",
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    };
-    // expo-av only supports GET for remote URIs, so we cannot send the text
-    // in a POST body that way. Instead: fire the POST ourselves, write the
-    // streamed bytes to a temp file as they arrive, and start playback as
-    // soon as we have a few KB. React Native's fetch doesn't expose a true
-    // streaming reader on all platforms — keep this branch conservative by
-    // only attempting if global ReadableStream + Response.body is available.
-    const r: any = await fetch(`${API_BASE_URL}/openai/tts/stream`, {
+    const res = await fetch(`${API_BASE_URL}/openai/tts/stream`, {
       method: "POST",
-      headers,
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
       body: JSON.stringify({ text: text.slice(0, 4000) }),
+      signal,
     });
     if (my !== reqId) return null;
-    if (!r.ok) return null;
-    const reader = r.body && typeof r.body.getReader === "function" ? r.body.getReader() : null;
-    if (!reader) return null;
-
+    if (!res.ok) return null;
+    const b64 = await drainResponseToBase64(res, signal);
+    if (my !== reqId) return null;
+    if (!b64) return null;
     const path = `${cacheDirectory}tts-${my}.mp3`;
-    // Accumulate chunks; once we have enough for the decoder to start
-    // (~32KB ≈ 2s of MP3 at 128kbps), kick off playback while we keep
-    // writing the rest. expo-av will play what's available and gracefully
-    // pick up appended bytes when the OS re-reads the file.
-    let buf: Uint8Array[] = [];
-    let total = 0;
-    let started = false;
-    let started_sound: Audio.Sound | null = null;
-    const START_THRESHOLD = 24 * 1024;
-
-    const flush = async () => {
-      const merged = Buffer.concat(buf.map(u => Buffer.from(u)));
-      buf = [];
-      const b64 = merged.toString("base64");
-      // Append: writeAsStringAsync overwrites, so we re-serialize the whole
-      // running buffer each time. Cheap relative to TTS gen latency.
-      await writeAsStringAsync(path, b64, { encoding: EncodingType.Base64 });
-    };
-
-    const allBytes: Uint8Array[] = [];
-
-    while (true) {
-      const { value, done } = await reader.read();
-      if (my !== reqId) { try { await reader.cancel(); } catch {} return null; }
-      if (done) break;
-      if (value) {
-        allBytes.push(value);
-        total += value.byteLength;
-        buf.push(value);
-      }
-      if (!started && total >= START_THRESHOLD) {
-        const merged = Buffer.concat(allBytes.map(u => Buffer.from(u)));
-        await writeAsStringAsync(path, merged.toString("base64"), { encoding: EncodingType.Base64 });
-        if (my !== reqId) return null;
-        try {
-          await Audio.setAudioModeAsync({
-            playsInSilentModeIOS: true,
-            staysActiveInBackground: false,
-            shouldDuckAndroid: true,
-          });
-        } catch {}
-        const { sound: s } = await Audio.Sound.createAsync({ uri: path }, { shouldPlay: true });
-        if (my !== reqId) { try { await s.unloadAsync(); } catch {} return null; }
-        started_sound = s;
-        started = true;
-      }
-    }
-    // Final flush in case we never crossed the start threshold (very short text).
-    if (allBytes.length > 0) {
-      const merged = Buffer.concat(allBytes.map(u => Buffer.from(u)));
-      await writeAsStringAsync(path, merged.toString("base64"), { encoding: EncodingType.Base64 });
-    }
-    if (!started) {
-      if (my !== reqId) return null;
-      try {
-        await Audio.setAudioModeAsync({
-          playsInSilentModeIOS: true,
-          staysActiveInBackground: false,
-          shouldDuckAndroid: true,
-        });
-      } catch {}
-      const { sound: s } = await Audio.Sound.createAsync({ uri: path }, { shouldPlay: true });
-      if (my !== reqId) { try { await s.unloadAsync(); } catch {} return null; }
-      started_sound = s;
-    }
-    return started_sound;
-  } catch {
+    await writeAsStringAsync(path, b64, { encoding: EncodingType.Base64 });
+    if (my !== reqId) return null;
+    return path;
+  } catch (err) {
+    // Re-throw aborts so callers can distinguish user-cancel from
+    // unrelated transport failure.
+    if ((err as any)?.name === "AbortError") throw err;
     return null;
   }
 }
 
-async function legacyJsonPlayback(my: number, text: string, token: string | null): Promise<Audio.Sound | null> {
+async function fetchLegacyTtsToFile(
+  my: number,
+  text: string,
+  token: string | null,
+  signal: AbortSignal,
+): Promise<string | null> {
   const res = await fetch(`${API_BASE_URL}/openai/tts`, {
     method: "POST",
     headers: {
@@ -155,6 +136,7 @@ async function legacyJsonPlayback(my: number, text: string, token: string | null
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
     },
     body: JSON.stringify({ text: text.slice(0, 4000) }),
+    signal,
   });
   if (my !== reqId) return null;
   if (!res.ok) throw new Error(`tts ${res.status}`);
@@ -162,22 +144,10 @@ async function legacyJsonPlayback(my: number, text: string, token: string | null
   if (my !== reqId) return null;
   const b64 = String(json.audio || "");
   if (!b64) throw new Error("empty audio");
-
   const path = `${cacheDirectory}tts-${my}.mp3`;
   await writeAsStringAsync(path, b64, { encoding: EncodingType.Base64 });
   if (my !== reqId) return null;
-
-  try {
-    await Audio.setAudioModeAsync({
-      playsInSilentModeIOS: true,
-      staysActiveInBackground: false,
-      shouldDuckAndroid: true,
-    });
-  } catch {}
-
-  const { sound: s } = await Audio.Sound.createAsync({ uri: path }, { shouldPlay: true });
-  if (my !== reqId) { try { await s.unloadAsync(); } catch {} return null; }
-  return s;
+  return path;
 }
 
 export async function speak(id: string, text: string): Promise<void> {
@@ -188,27 +158,47 @@ export async function speak(id: string, text: string): Promise<void> {
   state = "loading";
   notify();
 
+  const abort = new AbortController();
+  currentAbort = abort;
+
+  let createdSound: Audio.Sound | null = null;
   try {
     const token = await getToken();
 
-    // Prefer streaming when available; fall back to legacy JSON base64 on
-    // web, on probe failure, or when the runtime can't expose a stream
-    // reader (older React Native fetch shims).
-    let s: Audio.Sound | null = null;
+    let path: string | null = null;
     try {
-      s = await tryStreamingPlayback(my, text, token);
-    } catch {
-      s = null;
+      path = await fetchStreamingTtsToFile(my, text, token, abort.signal);
+    } catch (err) {
+      if ((err as any)?.name === "AbortError") return; // user stopped
+      path = null;
     }
     if (my !== reqId) return;
-    if (!s) {
-      s = await legacyJsonPlayback(my, text, token);
+    if (!path) {
+      try {
+        path = await fetchLegacyTtsToFile(my, text, token, abort.signal);
+      } catch (err) {
+        if ((err as any)?.name === "AbortError") return;
+        throw err;
+      }
     }
-    if (my !== reqId || !s) {
-      if (s) { try { await s.unloadAsync(); } catch {} }
+    if (my !== reqId || !path) return;
+
+    try {
+      await Audio.setAudioModeAsync({
+        playsInSilentModeIOS: true,
+        staysActiveInBackground: false,
+        shouldDuckAndroid: true,
+      });
+    } catch {}
+
+    const { sound: s } = await Audio.Sound.createAsync({ uri: path }, { shouldPlay: true });
+    createdSound = s;
+    // The user may have pressed stop between awaits. If so, tear down
+    // the freshly-created sound instead of leaking it.
+    if (my !== reqId) {
+      try { await s.unloadAsync(); } catch {}
       return;
     }
-
     sound = s;
     state = "playing";
     notify();
@@ -226,11 +216,16 @@ export async function speak(id: string, text: string): Promise<void> {
       }
     });
   } catch {
+    if (createdSound) {
+      try { await createdSound.unloadAsync(); } catch {}
+    }
     if (my === reqId) {
       activeId = null;
       state = "idle";
       notify();
     }
+  } finally {
+    if (currentAbort === abort) currentAbort = null;
   }
 }
 
