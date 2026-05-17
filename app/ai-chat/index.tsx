@@ -7,7 +7,7 @@ import { useColors } from "@/hooks/useColors";
 // Entry behavior: always open a fresh empty chat. The previous "auto-open
 // last conversation" shortcut was removed by user request — opening the AI
 // area should feel like starting a new ChatGPT thread. Previous chats stay
-// accessible from the in-chat left drawer ("AI Sohbetler" listesi).
+// accessible from the in-chat right drawer ("AI Sohbetler" listesi).
 export default function AiChatEntryScreen() {
   const router = useRouter();
   const colors = useColors();
