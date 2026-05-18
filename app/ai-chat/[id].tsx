@@ -11,7 +11,6 @@ try { DocumentPicker = require("expo-document-picker"); } catch {}
 import {
   ActivityIndicator,
   Alert,
-  AppState,
   FlatList,
   Image,
   Modal,
@@ -428,29 +427,14 @@ export default function AiChatScreen() {
     };
   }, []);
 
-  // When the app goes to background iOS suspends networking; an in-flight
-  // streaming fetch then rejects from native code and (if uncaught) can
-  // crash the app on resume. Abort cleanly on background to prevent that.
-  //
-  // NOTE: we deliberately do NOT abort on `inactive`. `inactive` fires
-  // for transient OS gestures (control center, notification banner,
-  // app-switcher swipe-up, incoming call alert) where networking is
-  // NOT actually suspended; aborting there killed responses whenever
-  // the user briefly glanced away. Only true `background` triggers the
-  // iOS network suspend that the cleanup guards against.
-  useEffect(() => {
-    const sub = AppState.addEventListener("change", (next) => {
-      if (next === "background") {
-        try { cleanupRef.current?.(); } catch {}
-        cleanupRef.current = null;
-        try { stopCurrentPlayback(); } catch {}
-        setIsStreaming(false);
-        setShowTyping(false);
-        setActiveTools([]);
-      }
-    });
-    return () => sub.remove();
-  }, []);
+  // Kullanıcı tercihi: arkaplana geçince stream'i kesme. iOS ~30sn'lik
+  // background grace period boyunca fetch okumaya devam eder; süreç
+  // gerçekten süspanse olursa `streamAiMessage` içindeki try/catch
+  // native rejection'ı yutar ve `onError` ile temiz biten bir akış
+  // olarak işlenir (app crash etmez — sadece yarıda kalır). Ön plana
+  // dönüldüğünde mesajlar sunucudan yeniden okunur. Bu yüzden burada
+  // AppState dinleyicisi YOK — sunucu çalışmaya devam ettiği sürece
+  // istemci de pencere yakaladığı kadar veri toplar.
 
   const pickImage = useCallback(async () => {
     setShowAttachMenu(false);
