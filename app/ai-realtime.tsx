@@ -580,7 +580,7 @@ export default function AiRealtimeScreen() {
         (session as any)?.model ||
         "gpt-realtime";
       const sdpRes = await fetch(
-        `https://api.openai.com/v1/realtime?model=${sessionModel}`,
+        `https://api.openai.com/v1/realtime/calls?model=${sessionModel}`,
         {
           method: "POST",
           headers: {
