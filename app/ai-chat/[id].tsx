@@ -431,9 +431,16 @@ export default function AiChatScreen() {
   // When the app goes to background iOS suspends networking; an in-flight
   // streaming fetch then rejects from native code and (if uncaught) can
   // crash the app on resume. Abort cleanly on background to prevent that.
+  //
+  // NOTE: we deliberately do NOT abort on `inactive`. `inactive` fires
+  // for transient OS gestures (control center, notification banner,
+  // app-switcher swipe-up, incoming call alert) where networking is
+  // NOT actually suspended; aborting there killed responses whenever
+  // the user briefly glanced away. Only true `background` triggers the
+  // iOS network suspend that the cleanup guards against.
   useEffect(() => {
     const sub = AppState.addEventListener("change", (next) => {
-      if (next === "background" || next === "inactive") {
+      if (next === "background") {
         try { cleanupRef.current?.(); } catch {}
         cleanupRef.current = null;
         try { stopCurrentPlayback(); } catch {}
