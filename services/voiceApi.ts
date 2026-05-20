@@ -9,7 +9,28 @@ import {
 import { fetch } from "expo/fetch";
 import { API_BASE_URL } from "./api";
 import { cleanTranscript, isHallucinatedTranscript } from "./transcriptFilter";
+import {
+  classifyTranscriptIntent,
+  createSessionGateState,
+  shouldCreateResponse,
+  type IntentResult,
+  type SessionGateState,
+} from "./realtimeNoResponseGate";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+
+let legacyVoiceGateState: SessionGateState = createSessionGateState();
+
+export function resetLegacyVoiceGateState(): void {
+  legacyVoiceGateState = createSessionGateState();
+}
+
+export function getLegacyVoiceGateState(): SessionGateState {
+  return legacyVoiceGateState;
+}
+
+export function gateLegacyVoiceTranscript(text: string): IntentResult {
+  return classifyTranscriptIntent(text, legacyVoiceGateState);
+}
 
 async function getToken(): Promise<string | null> {
   try {
@@ -200,7 +221,27 @@ export async function sendVoiceMessage(
             if (parsed.type === "user_transcript") {
               const cleaned = cleanTranscript(String(parsed.data ?? ""));
               if (cleaned && !isHallucinatedTranscript(cleaned)) {
-                onUserTranscript(cleaned);
+                // Apply the shared no-response gate (parity with realtime
+                // path). If the STT transcript is ambient/media/subtitle/
+                // foreign-news noise, abort the SSE stream so the rest of
+                // the assistant turn (transcript chunks, audio, persisted
+                // assistant_message_id) is dropped, and do NOT surface
+                // the transcript to the UI.
+                const decision = gateLegacyVoiceTranscript(cleaned);
+                if (!shouldCreateResponse(decision)) {
+                  if (__DEV__) {
+                    console.log(
+                      "[voiceApi gate] ignore:",
+                      decision.reason,
+                      "::",
+                      decision.cleanedTranscript,
+                    );
+                  }
+                  abortController.abort();
+                  onDone();
+                  return;
+                }
+                onUserTranscript(decision.cleanedTranscript);
               }
             } else if (parsed.type === "transcript") {
               onTranscript(parsed.data);
